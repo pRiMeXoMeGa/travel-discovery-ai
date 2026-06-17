@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Env / secrets
+.env
+.env.local
+*.local
+
+# Data artifacts (large; produced by ingestion, not committed)
+data/
+*.csv
+*.csv.gz
+*.parquet
+dumps/
+*.dump
+*.snapshot
+
+# Models cache (fastembed/onnx)
+.fastembed_cache/
+.cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Claude Code (agents, local settings, project memory)
+.claude/
+CLAUDE.md
+.mcp.json
+
+# Planning / brief (kept local, not part of the deliverable repo)
+plan.md
+ASSIGNMENT.md
+Full Stack AI Developer Assignment.pdf
+temp.txt

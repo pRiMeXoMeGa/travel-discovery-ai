@@ -1,0 +1,85 @@
+# One-command local run. Brings up the full Path A stack locally:
+# Postgres (relational) + Qdrant (vectors) + Redis (cache) + backend + frontend.
+#
+#   docker compose up --build
+#
+# First-time data load (after the stores are up) — restore the pre-built dump
+# and Qdrant snapshot, OR run the ingestion pipeline:
+#   docker compose run --rm ingestion python ingest.py
+#
+# See README.md for the seed/restore strategy.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: travel
+      POSTGRES_PASSWORD: travel
+      POSTGRES_DB: travel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U travel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrantdata:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      # Override .env host-style URLs with compose service names.
+      DATABASE_URL: postgresql://travel:travel@postgres:5432/travel
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  # One-off ingestion / data generation. Not started by `up` (profile-gated).
+  ingestion:
+    build: ./ingestion
+    profiles: ["tools"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://travel:travel@postgres:5432/travel
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+volumes:
+  pgdata:
+  qdrantdata:
