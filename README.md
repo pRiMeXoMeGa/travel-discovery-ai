@@ -1,6 +1,6 @@
 # Travel Discovery AI
 
-AI-native travel discovery & booking — a Booking.com/Airbnb-style product surface with a multi-agent concierge brain underneath. Built against the [assignment brief](./ASSIGNMENT.md); see [plan.md](./plan.md) for the full build plan and architectural decisions.
+AI-native travel discovery & booking — a Booking.com/Airbnb-style product surface with a multi-agent concierge brain underneath.
 
 > **Status:** scaffold. Modules are skeletons with `TODO` markers; wiring, config, and the deploy stack are in place.
 
@@ -34,21 +34,38 @@ docker compose up --build   # postgres + qdrant + redis + backend + frontend
 # Generate synthetic data + run the full ingestion pipeline (enrich + embed + index)
 docker compose run --rm ingestion python ingest.py
 
-# OR restore the pre-built dump + Qdrant snapshot (fast path) — see ingestion/README.
+# OR restore the pre-built dump + Qdrant snapshot (fast path).
 ```
+
+See [ingestion/README.md](./ingestion/README.md) for the data layer details (store split, enrichments, deterministic calendar, scale notes).
 
 ## Repo layout
 
-```
-backend/     FastAPI: traditional search/filter API + streaming multi-agent concierge
-frontend/    Next.js booking-style product surface + conversational concierge
-ingestion/   Re-runnable data generation + ingestion pipeline (enrich, embed, index)
-docker-compose.yml   Full local stack
-```
+| Path | What | Docs |
+|---|---|---|
+| `backend/` | FastAPI: traditional search/filter API + streaming multi-agent concierge | [backend/README.md](./backend/README.md) |
+| `frontend/` | Next.js booking-style product surface + conversational concierge | [frontend/README.md](./frontend/README.md) |
+| `ingestion/` | Re-runnable data generation + ingestion pipeline (enrich, embed, index) | [ingestion/README.md](./ingestion/README.md) |
+| `docker-compose.yml` | Full local stack | — |
 
-## Deployment (Path A)
+## Deployment (Path A — free tier)
 
-See [plan.md → Phase 6](./plan.md) for the step-by-step runbook (Neon + Qdrant Cloud + Upstash + Render + Vercel).
+All services have free tiers. Stand up the data stores first, backend next, frontend last.
 
-<!-- TODO (deliverables): data choice + why · key trade-offs · what I'd change with another week
-     (→ single-VM Path B) · rough cost per query at production scale · hours actually spent. -->
+1. **Data stores** — create a **Neon** Postgres project, a **Qdrant Cloud** free cluster (1 GB), and an **Upstash** Redis database; copy each connection string. Restore the pre-built Postgres dump + Qdrant snapshot (don't re-ingest against a remote DB).
+2. **Backend (Render)** — New → Web Service → connect the repo (builds `backend/Dockerfile`). Set env vars in the dashboard: `DATABASE_URL`, `QDRANT_URL` + `QDRANT_API_KEY`, `REDIS_URL`, `GEMINI_API_KEY` (+ `ANTHROPIC_API_KEY`). Never bake keys into the image. Add a cron ping to `/health` (~10 min) to defeat the free-tier spin-down.
+3. **Frontend (Vercel)** — import the repo (`frontend/`), set `NEXT_PUBLIC_API_URL` to the Render URL.
+4. **Wire + verify** — lock backend CORS to the Vercel origin; confirm SSE streams over HTTPS end-to-end (no mixed-content, no proxy buffering).
+
+<!-- TODO (deliverables, fill in-README before submission):
+     - Mermaid architecture diagram
+     - data choice (synthetic/real/mixed) + why
+     - agent-framework + LLM + vector-DB choices with 3–5 line "why"
+     - key trade-offs (e.g. deterministic calendar, 384-dim embeddings, demo-subset summaries)
+     - what I'd change with another week (→ single-VM deploy: Oracle Always-Free / Hetzner)
+     - rough cost per user query at production scale
+     - hours actually spent -->
+
+## Evaluation
+
+See [EVAL.md](./EVAL.md) for the golden-query set, scoring rubric, and grounding/citation checks.
