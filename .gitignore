@@ -15,6 +15,7 @@ npm-debug.log*
 # Env / secrets
 .env
 .env.local
+.env.example
 *.local
 
 # Data artifacts (large; produced by ingestion, not committed)
@@ -46,3 +47,7 @@ plan.md
 ASSIGNMENT.md
 Full Stack AI Developer Assignment.pdf
 temp.txt
+
+# Local Docker Compose overrides (e.g. port remapping for dev machines with
+# a native Postgres on 5432 — see docker-compose.override.yml for the pattern)
+docker-compose.override.yml

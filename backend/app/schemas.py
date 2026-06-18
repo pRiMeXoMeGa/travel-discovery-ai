@@ -1,6 +1,6 @@
 """Pydantic models shared across the API."""
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -77,3 +77,58 @@ class Citation(BaseModel):
 
 class CompareRequest(BaseModel):
     listing_ids: list[str] = Field(min_length=2, max_length=4)
+
+
+# ── Listing detail ────────────────────────────────────────────────────────────
+class AvailabilityDay(BaseModel):
+    date: str          # ISO-8601 "YYYY-MM-DD"
+    available: bool
+    price: float
+
+
+class ListingDetail(BaseModel):
+    id: str
+    name: str
+    type: str
+    city: str
+    neighbourhood: str | None = None
+    lat: float
+    lng: float
+    base_price: float
+    beds: int
+    amenities: list[str]
+    photos: list[str]
+    host: dict[str, Any]
+    rating: float | None = None
+    review_count: int = 0
+    neighbourhood_price_pct: float | None = None
+    # Precomputed summary (from listing_summaries table — may be null while ingestion runs)
+    summary: str | None = None
+    aspect_avg: dict[str, Any] | None = None
+    # 30-day availability calendar preview
+    availability_window: list[AvailabilityDay] = Field(default_factory=list)
+
+
+# ── Reviews ───────────────────────────────────────────────────────────────────
+class ReviewItem(BaseModel):
+    id: str
+    date: str | None = None
+    reviewer: str | None = None
+    rating: float | None = None
+    text: str
+    language: str | None = None
+    aspects: dict[str, Any] | None = None
+    sentiment: float | None = None
+
+
+class ReviewsResponse(BaseModel):
+    results: list[ReviewItem]
+    total: int
+    page: int
+    page_size: int
+
+
+# ── Batch compare ─────────────────────────────────────────────────────────────
+class CompareMatrix(BaseModel):
+    listings: list[ListingDetail]
+    verdict: str | None = None   # AI-generated verdict — deferred to agent phase

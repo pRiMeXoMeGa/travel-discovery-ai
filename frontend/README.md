@@ -2,7 +2,7 @@
 
 Single-page booking-style product surface + conversational concierge. Next.js 14 (App Router), TypeScript, Tailwind, MapLibre.
 
-> **Status:** scaffold. Layout regions and the API/SSE clients are in place; UI components are `TODO`.
+> **Status:** scaffold (Phase 4 — pending). Layout regions + the API/SSE clients (`lib/api.ts`, `lib/concierge.ts`) are in place; UI components are `TODO`. **The backend it consumes is live and verified** on `:8000` — `/api/search`, `/api/listings/{id}`, `/api/listings/{id}/reviews`, `/api/nl-search`, and the SSE `/api/concierge/stream` (see [backend/README.md](../backend/README.md) for the contract).
 
 ## Layout
 

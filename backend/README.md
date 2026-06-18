@@ -2,7 +2,7 @@
 
 API service exposing **both** the traditional search/filter endpoints **and** the streaming multi-agent concierge.
 
-> **Status:** scaffold. Wiring, config, routing, and clients are in place; endpoint/agent bodies are `NotImplementedError` / `TODO`.
+> **Status:** implemented & verified (Phases 2 + 3). All endpoints below are live; the 4-agent concierge streams over SSE. Only the batch-compare **AI verdict** is deferred (the comparison matrix itself works).
 
 ## Layout
 
@@ -52,9 +52,29 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000   # needs a .env at repo root (see ../.env.example)
 ```
 
+## Agents (`app/agents/`)
+
+| Agent | Role | Grounding |
+|---|---|---|
+| `intent` | NL → `StructuredQuery` via structured-JSON LLM call; resolves vague dates ("late June") to ISO ranges | omits fields it can't determine (no fabrication) |
+| `retrieval` | embeds intent (fastembed) → Qdrant search **fused with hard-constraint payload filters** → hydrates rows from Postgres | per-result rationale built **deterministically** from real fields — the LLM can't invent attributes |
+| `review_intel` | searches review vectors → LLM synthesis ("praise X, complain about Y") | **mandatory `[r#]` citations** to real review rows; abstains honestly when no reviews |
+| `itinerary` | LLM decides segment structure only; property selection + costing is **deterministic** via the availability function | totals from real prices; budget-checked; ranked swap-out alternatives per stay |
+
+`orchestrator.py` is a custom async generator: routes by intent, runs each agent in a guard that emits `status:"error"` and **degrades to traditional filtered search** rather than crashing the stream, and records per-step token/latency via `observability.py`.
+
 ## Notes / decisions
 
-- **fastembed (ONNX), not sentence-transformers/torch** — small enough to fit Render's free 512 MB. Same 384-dim `bge-small-en-v1.5` model used at ingest, so query and corpus vectors share one space.
-- **SSE, not WebSocket** — simpler and works through Render/Vercel over HTTPS; requires a long-lived host (not serverless).
-- **Single uvicorn worker** in the Dockerfile — keeps memory low and avoids duplicate embedding-model loads on free tier.
-- **Async everywhere** — asyncpg pool, async Qdrant/Redis clients; CPU-bound embedding runs via `asyncio.to_thread`.
+- **LLM over REST, not the deprecated `google-generativeai` SDK** — `llm.py` calls Gemini `generateContent` / `streamGenerateContent` via httpx, with structured-JSON (`responseMimeType`), retry-on-429/5xx + backoff, and a one-shot JSON repair pass. Provider switch (`gemini` | `anthropic`) behind one module.
+- **Custom orchestrator, not LangGraph/CrewAI** — first-class SSE step streaming + exact token/latency accounting; lighter for 4 cooperating agents.
+- **fastembed (ONNX), not sentence-transformers/torch** — fits Render's free 512 MB. Same 384-dim `bge-small-en-v1.5` at ingest + query, so vectors share one space.
+- **SSE, not WebSocket** — works through Render/Vercel over HTTPS; needs a long-lived host (not serverless).
+- **Async everywhere** — asyncpg pool, async Qdrant/Redis; CPU-bound embedding via `asyncio.to_thread`. Redis caching (search, retrievals, review syntheses) degrades gracefully if Redis is down.
+
+## Trade-offs / simplifications
+
+- **Beds-as-capacity** — no `max_guests` column; guest filtering uses `beds`.
+- **Availability filter is post-DB-pagination** — search `total` reflects pre-availability counts (fine at current scale).
+- **`app/availability.py` mirrors `ingestion/availability.py`** — same hash/params; keep them in sync.
+- **batch-compare AI verdict deferred** — the matrix (price/amenities/rating/calendar) is implemented; only the LLM verdict string is pending.
+- Qdrant `.search` emits a deprecation warning under client 1.12 (functional; `query_points` migration deferred).
