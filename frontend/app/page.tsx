@@ -6,6 +6,7 @@ import { search, SearchFilters, SearchResponse } from "@/lib/api";
 import { FilterPanel } from "@/components/filters/FilterPanel";
 import { SearchBar } from "@/components/filters/SearchBar";
 import { FilterChips } from "@/components/filters/FilterChips";
+import { NlSearchBar } from "@/components/concierge/NlSearchBar";
 import { ResultsList } from "@/components/listings/ResultsList";
 import { MapView } from "@/components/map/MapView";
 import { CompareBar } from "@/components/compare/CompareBar";
@@ -167,7 +168,12 @@ function SearchPageInner() {
           </button>
         </div>
 
-        {/* Active filter chips */}
+        {/* Natural-language AI search — runs alongside the traditional filters */}
+        <div className="mt-2.5">
+          <NlSearchBar onApply={updateFilters} />
+        </div>
+
+        {/* Active filter chips (update to reflect what the NL query was understood as) */}
         <div className="mt-2.5">
           <FilterChips
             filters={filters}

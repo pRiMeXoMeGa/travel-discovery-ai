@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import { getWishlist, toggleWishlist, getCompare, toggleCompare, clearCompare } from "@/lib/wishlist";
 import { ListingCard } from "@/lib/api";
+import { ConciergePanel } from "@/components/concierge/ConciergePanel";
 
 // ---- Wishlist ----
 interface WishlistCtx {
@@ -100,6 +101,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
       >
         <HoverContext.Provider value={{ hoveredId, setHoveredId }}>
           {children}
+          {/* Concierge is mounted globally so it's reachable from any page. */}
+          <ConciergePanel />
         </HoverContext.Provider>
       </CompareContext.Provider>
     </WishlistContext.Provider>

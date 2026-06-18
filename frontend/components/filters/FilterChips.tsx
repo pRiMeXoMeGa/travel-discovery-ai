@@ -24,6 +24,14 @@ interface Chip {
 export function FilterChips({ filters, onRemove, total }: FilterChipsProps) {
   const chips: Chip[] = [];
 
+  if (filters.city) {
+    chips.push({
+      id: "city",
+      label: filters.city,
+      onRemove: () => onRemove("city"),
+    });
+  }
+
   if (filters.check_in && filters.check_out) {
     const ci = parseISO(filters.check_in);
     const co = parseISO(filters.check_out);

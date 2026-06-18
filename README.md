@@ -9,8 +9,8 @@ AI-native travel discovery & booking — a Booking.com/Airbnb-style product surf
 | 1 — Data layer | Synthetic generation, ingestion, enrichments, embeddings | ✅ done (dev scale) |
 | 2 — Traditional API | Search/filter/sort, availability, detail, reviews, compare | ✅ done & verified |
 | 3 — Multi-agent concierge | Intent / Retrieval / Review-intel / Itinerary, SSE streaming | ✅ done & verified |
-| 4 — Frontend booking surface | Filters, cards, map↔list, detail, wishlist, compare | ⬜ pending |
-| 5 — Frontend AI integration | NL search bar + chips, streaming concierge UI | ⬜ pending |
+| 4 — Frontend booking surface | Filters, cards, map↔list, detail, wishlist, compare | ✅ done & verified |
+| 5 — Frontend AI integration | NL search bar + chips, streaming concierge UI | ✅ done & verified |
 | 6 — Deployment | Public URL (Render + Vercel + Neon + Qdrant Cloud + Upstash) | ⬜ pending |
 
 > **Current data scale:** dev scale (**1,000 listings / 5,000 reviews**, Dubai + Lisbon). The pipeline is parameterized — full **50K/200K** is a single flag (`python ingest.py --scale full`); see [Trade-offs](#key-trade-offs).

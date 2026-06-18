@@ -106,10 +106,11 @@ async def run_concierge(req: ConciergeRequest) -> AsyncIterator[dict]:
 
     citations: list[dict] = []
     answer_context = ""
+    plan: dict | None = None
 
     # ── 2) Route ──────────────────────────────────────────────────────────
     if route == "itinerary":
-        answer_context, citations = await _run_itinerary(req, sq, trace)
+        answer_context, citations, plan = await _run_itinerary(req, sq, trace)
         async for ev in _emit_route_events(trace, "itinerary"):
             yield ev
     elif route == "review":
@@ -121,7 +122,11 @@ async def run_concierge(req: ConciergeRequest) -> AsyncIterator[dict]:
         async for ev in _emit_route_events(trace, "search"):
             yield ev
 
-    # Surface structured route data + citations to the client before tokens.
+    # Structured itinerary plan (day-by-day stays + costs + swap-out alternatives)
+    # so the UI can render real cards rather than re-parsing prose.
+    if plan:
+        yield {"type": "itinerary", "plan": plan}
+    # Surface citations to the client before the answer tokens.
     yield {"type": "data", "citations": citations}
 
     # ── 3) Stream the grounded answer ─────────────────────────────────────
@@ -136,6 +141,8 @@ async def run_concierge(req: ConciergeRequest) -> AsyncIterator[dict]:
             answer_step.output_tokens += 1  # coarse token proxy for streaming
             yield {"type": "token", "text": tok}
         answer_step.status = "done"
+        # Explicit done so the UI can stop the "Writing answer" spinner.
+        yield {"type": "step", "agent": "answer", "status": "done"}
     except llm.LLMError as exc:
         answer_step.status, answer_step.detail = "error", str(exc)
         if not streamed:
@@ -228,14 +235,14 @@ async def _run_itinerary(req, sq, trace) -> tuple[str, list[dict]]:
             lid = stay["chosen"]["listing"]["id"]
             name = stay["chosen"]["listing"]["name"]
             citations.append({"kind": "listing", "id": lid, "snippet": name})
-        return _format_plan_ctx(plan), citations
+        return _format_plan_ctx(plan), citations, plan
     except Exception as exc:  # noqa: BLE001
         logger.warning("itinerary failed (%s) — falling back to search", exc)
         step.status, step.detail = "error", str(exc)
         step.latency_ms = (time.perf_counter() - t0) * 1000
         trace.add(step)
         cards = await _fallback_search(sq)
-        return _format_candidates_ctx(cards[:6]), []
+        return _format_candidates_ctx(cards[:6]), [], None
 
 
 async def _emit_route_events(trace, route) -> AsyncIterator[dict]:

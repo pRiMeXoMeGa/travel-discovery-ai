@@ -1,0 +1,30 @@
+event: step
+data: {"type": "step", "agent": "intent", "status": "start"}
+
+event: step
+data: {"type": "step", "agent": "intent", "status": "done", "data": {"city": null, "check_in": null, "check_out": null, "party_size": null, "budget_per_night": null, "budget_total": null, "hard_constraints": [], "soft_preferences": [], "vibe": null}}
+
+event: step
+data: {"type": "step", "agent": "router", "status": "done", "data": {"route": "itinerary"}}
+
+event: step
+data: {"type": "step", "agent": "itinerary", "status": "done", "data": {"stays": 1, "total_cost": 1969.41, "within_budget": null, "notes": []}}
+
+event: itinerary
+data: {"type": "itinerary", "plan": {"city": null, "total_nights": 4, "total_cost": 1969.41, "currency_note": "Prices are in the listing's base currency (deterministic calendar).", "within_budget": null, "stays": [{"segment": 1, "theme": "comfortable base", "nights": 4, "check_in": "2026-07-02", "check_out": "2026-07-06", "chosen": {"listing": {"id": "90e73235-3161-673b-53d9-092602168a14", "name": "Cosy Haven in Palm Jumeirah", "type": "entire place", "city": "Dubai", "neighbourhood": "Palm Jumeirah", "lat": 25.087311, "lng": 55.323177, "price_per_night": 455.88, "total_for_stay": null, "rating": 4.96999979019165, "review_count": 15, "key_amenities": ["pool", "parking", "kitchen", "breakfast_included"], "photo": "https://a0.muscache.com/pictures/miso/Hosting-50837299/original/8298b9ef-9437-4abd-9ebd-ac6a1f9e5868.jpeg", "distance_km": null}, "rationale": "rated 4.97; in Palm Jumeirah; $456/night; semantic match 0.68", "stay_cost": 1969.41}, "alternatives": [{"listing": {"id": "d57d44ca-845e-25e8-13b6-b4a1cbd49401", "name": "Bright Retreat in Palm Jumeirah", "type": "private room", "city": "Dubai", "neighbourhood": "Palm Jumeirah", "lat": 25.063107, "lng": 55.221934, "price_per_night": 99.21, "total_for_stay": null, "rating": 4.599999904632568, "review_count": 12, "key_amenities": ["hot_tub", "parking", "ac"], "photo": "https://a0.muscache.com/pictures/miso/Hosting-1099247043548522510/original/8800d8d9-7d0c-4129-a982-3d3cd2087b0f.jpeg", "distance_km": null}, "rationale": "rated 4.6; in Palm Jumeirah; $99/night; semantic match 0.68", "stay_cost": 394.86}, {"listing": {"id": "068a08b9-45d9-4c5c-b6f7-fe122646e1ca", "name": "Cosy Suite in Bur Dubai", "type": "entire place", "city": "Dubai", "neighbourhood": "Bur Dubai", "lat": 25.25044, "lng": 55.267254, "price_per_night": 542.97, "total_for_stay": null, "rating": 4.590000152587891, "review_count": 13, "key_amenities": ["parking", "pets_allowed"], "photo": "https://a0.muscache.com/pictures/miso/Hosting-1306456003281867304/original/deda9f5b-f288-43cb-9aca-e9730e7a0ea6.jpeg", "distance_km": null}, "rationale": "rated 4.59; in Bur Dubai; $543/night; semantic match 0.68", "stay_cost": 2247.9}, {"listing": {"id": "51442df6-a117-f4b8-9fb3-072acd64cf19", "name": "Cosy Place in Palm Jumeirah", "type": "entire place", "city": "Dubai", "neighbourhood": "Palm Jumeirah", "lat": 25.172253, "lng": 55.169834, "price_per_night": 147.13, "total_for_stay": null, "rating": 4.369999885559082, "review_count": 17, "key_amenities": ["wifi", "parking", "ac", "breakfast_included"], "photo": "https://a0.muscache.com/pictures/miso/Hosting-36865545/original/d44e117f-3f62-4ff4-a0fc-453d5dcbf6e0.jpeg", "distance_km": null}, "rationale": "rated 4.37; in Palm Jumeirah; $147/night; semantic match 0.68", "stay_cost": 576.75}, {"listing": {"id": "40072bbc-e565-8dcf-59a5-efbcab9997d8", "name": "Cosy Retreat in Jumeirah", "type": "private room", "city": "Dubai", "neighbourhood": "Jumeirah", "lat": 25.106037, "lng": 55.255394, "price_per_night": 154.59, "total_for_stay": null, "rating": 4.320000171661377, "review_count": 9, "key_amenities": ["wifi", "pets_allowed", "workspace"], "photo": "https://a0.muscache.com/pictures/miso/Hosting-611626129756862333/original/37a96bc3-0bce-4879-b153-983830c2b0d0.jpeg", "distance_km": null}, "rationale": "rated 4.32; in Jumeirah; $155/night; semantic match 0.68", "stay_cost": 641.55}], "days": ["2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05"]}], "notes": []}}
+
+event: data
+data: {"type": "data", "citations": [{"kind": "listing", "id": "90e73235-3161-673b-53d9-092602168a14", "snippet": "Cosy Haven in Palm Jumeirah"}]}
+
+event: step
+data: {"type": "step", "agent": "answer", "status": "start"}
+
+event: token
+data: {"type": "token", "text": "I'm having trouble generating a polished answer right now, but here is what I found:\n\nCity: None. Total nights: 4. Total cost: 1969.41. Within budget: None.\nStay 1 (comfortable base), 4 nights 2026-07-02->2026-07-06: Cosy Haven in Palm Jumeirah (Palm Jumeirah, $455.88/night, stay cost 1969.41). Swap-out alternatives: Bright Retreat in Palm Jumeirah, Cosy Suite in Bur Dubai."}
+
+event: step
+data: {"type": "step", "agent": "answer", "status": "error", "data": {"message": "GEMINI_API_KEY is not configured"}}
+
+event: done
+data: {"type": "done", "trace": {"request_id": "4beb1f15-d61d-47b9-a069-4db465615569", "query": "i want 7 day trip plan under $1000 in lisbon also show reviews and rating ans compare with 3 selected places, if you can add multi-stop location, its also fine", "input_tokens": 0, "output_tokens": 0, "latency_ms": 7.5, "steps": ["intent:done", "itinerary:done", "answer:error"]}}
+
