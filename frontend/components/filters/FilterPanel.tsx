@@ -57,19 +57,25 @@ export function FilterPanel({ filters, onChange }: FilterPanelProps) {
       {/* City */}
       <Section title="Destination">
         <div className="flex flex-col gap-1.5">
-          {CITIES.map((city) => (
-            <button
-              key={city}
-              onClick={() => onChange({ city, page: 1 })}
-              className={`text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                filters.city === city
-                  ? "bg-gray-900 text-white"
-                  : "text-gray-700 hover:bg-gray-100"
-              }`}
-            >
-              {city === "Lisbon" ? "🇵🇹" : "🇦🇪"} {city}
-            </button>
-          ))}
+          {CITIES.map((city) => {
+            const flag =
+              city === "Amsterdam" ? "🇳🇱"
+              : city === "Lisbon" ? "🇵🇹"
+              : "🇺🇸";
+            return (
+              <button
+                key={city}
+                onClick={() => onChange({ city, page: 1 })}
+                className={`text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  filters.city === city
+                    ? "bg-gray-900 text-white"
+                    : "text-gray-700 hover:bg-gray-100"
+                }`}
+              >
+                {flag} {city}
+              </button>
+            );
+          })}
         </div>
       </Section>
 

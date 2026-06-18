@@ -1,5 +1,8 @@
 "use client";
 
+// Required for MapLibre marker/popup/control positioning — without this CSS,
+// markers get no `position:absolute` and collapse to the corner (invisible).
+import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useCallback, useState } from "react";
 import { ListingCard, SearchFilters } from "@/lib/api";
 import { useHover } from "@/app/providers";
@@ -15,12 +18,16 @@ interface MapViewProps {
   onViewportSearch?: (lat: number, lng: number) => void;
 }
 
-const LISBON_CENTER: [number, number] = [-9.139, 38.722];
-const DUBAI_CENTER: [number, number] = [55.296, 25.276];
+const AMSTERDAM_CENTER: [number, number] = [4.9041, 52.3676];
+const LISBON_CENTER: [number, number] = [-9.1393, 38.7223];
+const LOS_ANGELES_CENTER: [number, number] = [-118.2437, 34.0522];
 
 function getCityCenter(city?: string): [number, number] {
-  if (city === "Dubai") return DUBAI_CENTER;
-  return LISBON_CENTER;
+  if (city === "Amsterdam") return AMSTERDAM_CENTER;
+  if (city === "Los Angeles") return LOS_ANGELES_CENTER;
+  if (city === "Lisbon") return LISBON_CENTER;
+  // Default to Amsterdam (new primary city)
+  return AMSTERDAM_CENTER;
 }
 
 interface PopupData {
@@ -38,6 +45,7 @@ export function MapView({ listings, filters, onViewportSearch }: MapViewProps) {
   const [popup, setPopup] = useState<PopupData | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [moveSearchVisible, setMoveSearchVisible] = useState(false);
+  const [zoomTick, setZoomTick] = useState(0);  // bumps on zoomend → re-cluster
   const moveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCityRef = useRef<string | undefined>(undefined);
 
@@ -93,6 +101,10 @@ export function MapView({ listings, filters, onViewportSearch }: MapViewProps) {
           setMoveSearchVisible(true);
         }, 600);
       });
+
+      // Re-cluster markers when the zoom changes so clusters split/merge as you
+      // zoom (without this, clicking a cluster zoomed in but never broke it up).
+      map.on("zoomend", () => setZoomTick((t) => t + 1));
     });
 
     return () => {
@@ -105,18 +117,35 @@ export function MapView({ listings, filters, onViewportSearch }: MapViewProps) {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-center map when city filter changes
+  // Frame the map to the ACTUAL property coordinates whenever results change.
+  // We have real lat/lng per listing, so fit the view to the pins rather than a
+  // static city centroid (which left pins off-screen). Skipped during a viewport
+  // "search this area" so we don't fight the user's pan.
   useEffect(() => {
-    if (!mapRef.current || !mapReady) return;
-    if (filters.city !== lastCityRef.current) {
-      mapRef.current.flyTo({
-        center: getCityCenter(filters.city),
-        zoom: 12,
-        duration: 1200,
-      });
-      lastCityRef.current = filters.city;
+    if (!mapRef.current || !mapReady || !maplibregl) return;
+    // Viewport-driven search: respect the user's current pan/zoom.
+    if (filters.near_lat != null && filters.near_lng != null) return;
+
+    if (!listings.length) {
+      // No results — fall back to the selected city's centroid.
+      if (filters.city !== lastCityRef.current) {
+        mapRef.current.flyTo({ center: getCityCenter(filters.city), zoom: 11, duration: 800 });
+        lastCityRef.current = filters.city;
+      }
+      return;
     }
-  }, [filters.city, mapReady]);
+
+    const bounds = new maplibregl.LngLatBounds();
+    listings.forEach((l) => {
+      if (typeof l.lng === "number" && typeof l.lat === "number") {
+        bounds.extend([l.lng, l.lat]);
+      }
+    });
+    if (!bounds.isEmpty()) {
+      mapRef.current.fitBounds(bounds, { padding: 64, maxZoom: 15, duration: 800 });
+    }
+    lastCityRef.current = filters.city;
+  }, [listings, mapReady, filters.city, filters.near_lat, filters.near_lng]);
 
   // Cluster listings into buckets by proximity at current zoom
   const clusterListings = useCallback((
@@ -172,8 +201,10 @@ export function MapView({ listings, filters, onViewportSearch }: MapViewProps) {
       el.style.height = `${size}px`;
       el.textContent = String(cluster.count);
       el.title = `${cluster.count} listings`;
-      el.addEventListener("click", () => {
-        map.flyTo({ center: [cluster.lng, cluster.lat], zoom: zoom + 2, duration: 800 });
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // Zoom in enough to break the cluster apart; re-clustering runs on zoomend.
+        map.flyTo({ center: [cluster.lng, cluster.lat], zoom: Math.min(zoom + 3, 16), duration: 700 });
       });
 
       const m = new maplibregl!.Marker({ element: el, anchor: "center" })
@@ -189,7 +220,10 @@ export function MapView({ listings, filters, onViewportSearch }: MapViewProps) {
       el.textContent = `$${Math.round(listing.price_per_night)}`;
       el.title = listing.name;
 
-      el.addEventListener("click", () => {
+      el.addEventListener("click", (e) => {
+        // Stop the click bubbling to the map container, whose 'click' handler
+        // would otherwise immediately close the popup we're about to open.
+        e.stopPropagation();
         const { x, y } = map.project([listing.lng, listing.lat]);
         setPopup({ listing, x, y });
         setHoveredId(listing.id);
@@ -206,23 +240,16 @@ export function MapView({ listings, filters, onViewportSearch }: MapViewProps) {
 
       markersRef.current.set(listing.id, { marker: m, el });
     });
-  }, [listings, mapReady, clusterListings, setHoveredId]);
+  }, [listings, mapReady, clusterListings, setHoveredId, zoomTick]);
 
-  // Update marker highlighting when hoveredId changes
+  // Update marker highlighting when hoveredId changes. (Popup is NOT closed on
+  // hover change — only via the × button or a map click — so it stays open long
+  // enough to click through to the listing.)
   useEffect(() => {
     markersRef.current.forEach(({ el }, id) => {
-      if (id === hoveredId) {
-        el.classList.add("hovered");
-      } else {
-        el.classList.remove("hovered");
-      }
+      el.classList.toggle("hovered", id === hoveredId);
     });
-
-    // Close popup when hover changes to something different
-    if (popup && popup.listing.id !== hoveredId) {
-      setPopup(null);
-    }
-  }, [hoveredId, popup]);
+  }, [hoveredId]);
 
   // Close popup on map click
   useEffect(() => {
@@ -263,8 +290,8 @@ export function MapView({ listings, filters, onViewportSearch }: MapViewProps) {
         <div
           className="absolute z-30 w-56 bg-white rounded-2xl shadow-2xl overflow-hidden border border-gray-100"
           style={{
-            left: Math.min(popup.x - 112, (containerRef.current?.offsetWidth ?? 600) - 240),
-            top: popup.y - 200,
+            left: Math.max(8, Math.min(popup.x - 112, (containerRef.current?.offsetWidth ?? 600) - 240)),
+            top: Math.max(8, popup.y - 200),
           }}
         >
           <button

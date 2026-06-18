@@ -56,8 +56,10 @@ CANONICAL_AMENITIES: list[str] = [
 
 # Map of raw / alias strings → canonical name.
 # Keys are lower-cased and stripped; values are canonical.
+# Includes both generic aliases AND real Inside Airbnb amenity strings so that
+# json.loads(listings.amenities) values are correctly mapped after normalization.
 _AMENITY_MAP: dict[str, str] = {
-    # wifi
+    # ── wifi ─────────────────────────────────────────────────────────────────
     "wifi": "wifi",
     "wi-fi": "wifi",
     "wi fi": "wifi",
@@ -65,96 +67,207 @@ _AMENITY_MAP: dict[str, str] = {
     "wireless internet": "wifi",
     "internet": "wifi",
     "broadband": "wifi",
-    # pool
+    # Real Airbnb strings
+    "fast wifi – 100 mbps": "wifi",
+    "fast wifi – 200 mbps": "wifi",
+    "fast wifi – 500 mbps": "wifi",
+    "fast wifi – 1 gbps": "wifi",
+    "fast wifi": "wifi",
+    "ethernet connection": "wifi",
+    "pocket wifi": "wifi",
+
+    # ── pool ─────────────────────────────────────────────────────────────────
     "pool": "pool",
     "swimming pool": "pool",
     "private pool": "pool",
     "outdoor pool": "pool",
     "indoor pool": "pool",
-    # kitchen
+    # Real Airbnb strings
+    "shared pool": "pool",
+    "private outdoor pool": "pool",
+    "private indoor pool": "pool",
+    "rooftop pool": "pool",
+    "lap pool": "pool",
+    "infinity pool": "pool",
+    "plunge pool": "pool",
+    "saltwater pool": "pool",
+    "pool with pool toys": "pool",
+
+    # ── kitchen ──────────────────────────────────────────────────────────────
     "kitchen": "kitchen",
     "kitchenette": "kitchen",
     "full kitchen": "kitchen",
     "equipped kitchen": "kitchen",
-    # parking
+    # Real Airbnb strings
+    "cooking basics": "kitchen",
+    "dishes and silverware": "kitchen",
+    "refrigerator": "kitchen",
+    "mini fridge": "kitchen",
+    "microwave": "kitchen",
+    "oven": "kitchen",
+    "stove": "kitchen",
+    "toaster": "kitchen",
+    "coffee maker": "kitchen",
+    "rice maker": "kitchen",
+    "blender": "kitchen",
+    "hot water kettle": "kitchen",
+    "freezer": "kitchen",
+    "dining table": "kitchen",
+    "wine glasses": "kitchen",
+
+    # ── parking ──────────────────────────────────────────────────────────────
     "parking": "parking",
     "free parking": "parking",
     "private parking": "parking",
     "garage": "parking",
     "car park": "parking",
-    # balcony
+    # Real Airbnb strings
+    "free parking on premises": "parking",
+    "free parking on street": "parking",
+    "free street parking": "parking",
+    "paid parking off premises": "parking",
+    "paid parking on premises": "parking",
+    "paid street parking off premises": "parking",
+    "paid valet parking on premises": "parking",
+    "private garage": "parking",
+    "carport": "parking",
+
+    # ── balcony ──────────────────────────────────────────────────────────────
     "balcony": "balcony",
     "terrace": "balcony",
     "patio": "balcony",
     "private balcony": "balcony",
-    # ac
+    # Real Airbnb strings
+    "patio or balcony": "balcony",
+    "private patio or balcony": "balcony",
+    "shared patio or balcony": "balcony",
+    "outdoor furniture": "balcony",
+    "outdoor dining area": "balcony",
+    "rooftop terrace": "balcony",
+
+    # ── ac ───────────────────────────────────────────────────────────────────
     "ac": "ac",
     "air conditioning": "ac",
     "air conditioner": "ac",
     "climate control": "ac",
     "a/c": "ac",
-    # gym
+    # Real Airbnb strings
+    "central air conditioning": "ac",
+    "window ac unit": "ac",
+    "portable air conditioning": "ac",
+    "split-type ductless system": "ac",
+    "ceiling fan": "ac",
+
+    # ── gym ──────────────────────────────────────────────────────────────────
     "gym": "gym",
     "fitness center": "gym",
     "fitness centre": "gym",
     "workout room": "gym",
     "exercise room": "gym",
-    # washer
+    # Real Airbnb strings
+    "shared gym": "gym",
+    "private gym": "gym",
+    "gym – shared": "gym",
+    "gym – private": "gym",
+    "exercise equipment": "gym",
+    "indoor exercise equipment": "gym",
+
+    # ── washer ───────────────────────────────────────────────────────────────
     "washer": "washer",
     "washing machine": "washer",
     "laundry": "washer",
     "laundry machine": "washer",
     "dryer": "washer",
     "washer/dryer": "washer",
-    # pets_allowed
+    # Real Airbnb strings
+    "free washer – in unit": "washer",
+    "free washer – in building": "washer",
+    "washer – in unit": "washer",
+    "washer – in building": "washer",
+    "paid washer – in building": "washer",
+    "dryer – in unit": "washer",
+    "dryer – in building": "washer",
+    "laundromat nearby": "washer",
+
+    # ── pets_allowed ─────────────────────────────────────────────────────────
     "pets allowed": "pets_allowed",
     "pet friendly": "pets_allowed",
     "pets": "pets_allowed",
     "dogs allowed": "pets_allowed",
     "cats allowed": "pets_allowed",
-    # hot_tub
+    # Real Airbnb strings (Airbnb uses exactly "pets allowed")
+
+    # ── hot_tub ──────────────────────────────────────────────────────────────
     "hot tub": "hot_tub",
     "jacuzzi": "hot_tub",
     "spa": "hot_tub",
     "whirlpool": "hot_tub",
-    # bbq
+    # Real Airbnb strings
+    "private hot tub": "hot_tub",
+    "shared hot tub": "hot_tub",
+    "hot tub – shared": "hot_tub",
+    "hot tub – private": "hot_tub",
+
+    # ── bbq ──────────────────────────────────────────────────────────────────
     "bbq": "bbq",
     "barbecue": "bbq",
     "grill": "bbq",
     "outdoor grill": "bbq",
-    # workspace
+    # Real Airbnb strings
+    "bbq grill": "bbq",
+    "shared bbq grill": "bbq",
+    "private bbq grill": "bbq",
+    "bbq grill – shared": "bbq",
+    "bbq grill – private": "bbq",
+
+    # ── workspace ────────────────────────────────────────────────────────────
     "workspace": "workspace",
     "dedicated workspace": "workspace",
     "desk": "workspace",
     "office space": "workspace",
     "home office": "workspace",
-    # beach_access
+    # Real Airbnb strings (Airbnb uses "dedicated workspace" exactly)
+
+    # ── beach_access ─────────────────────────────────────────────────────────
     "beach access": "beach_access",
     "beachfront": "beach_access",
     "near beach": "beach_access",
     "beach view": "beach_access",
-    # concierge
+    # Real Airbnb strings
+    "private beach access": "beach_access",
+    "shared beach access": "beach_access",
+    "beach essentials": "beach_access",
+
+    # ── concierge ────────────────────────────────────────────────────────────
     "concierge": "concierge",
     "24h concierge": "concierge",
     "front desk": "concierge",
     "reception": "concierge",
-    # breakfast_included
+
+    # ── breakfast_included ───────────────────────────────────────────────────
     "breakfast included": "breakfast_included",
     "breakfast": "breakfast_included",
     "complimentary breakfast": "breakfast_included",
-    # ev_charger
+    # Real Airbnb strings — Airbnb uses bare "breakfast"
+
+    # ── ev_charger ───────────────────────────────────────────────────────────
     "ev charger": "ev_charger",
     "electric vehicle charger": "ev_charger",
     "ev charging": "ev_charger",
     "tesla charger": "ev_charger",
-    # elevator
+    # Real Airbnb strings (Airbnb uses "ev charger" exactly)
+
+    # ── elevator ─────────────────────────────────────────────────────────────
     "elevator": "elevator",
     "lift": "elevator",
-    # baby_cot
+    # Real Airbnb strings — Airbnb uses "elevator" exactly
+
+    # ── baby_cot ─────────────────────────────────────────────────────────────
     "baby cot": "baby_cot",
     "crib": "baby_cot",
     "baby bed": "baby_cot",
     "travel cot": "baby_cot",
+    # Real Airbnb strings — Airbnb uses "crib" exactly
 }
 
 _CANONICAL_SET = set(CANONICAL_AMENITIES)

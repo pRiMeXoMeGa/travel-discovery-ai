@@ -23,7 +23,7 @@ function summarize(u: Record<string, unknown>): string[] {
 
 const EXAMPLES = [
   "a quiet 1-bed in Lisbon under 130 with a balcony for late June",
-  "family-friendly place in Dubai with a pool under 300",
+  "family-friendly place in Amsterdam with a kitchen and washer under 200",
 ];
 
 export function NlSearchBar({ onApply }: Props) {

@@ -25,7 +25,7 @@ if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: tr
 
   // Type and send itinerary query
   const input = page.locator("input[placeholder*='concierge']");
-  await input.fill("Plan a 4-night Dubai trip for a couple, one mid-range hotel near the metro and one splurge night with a view. Budget AED 4000 total. Avoid Deira.");
+  await input.fill("Plan a 4-night Los Angeles trip — one stay near the beach and one near downtown, budget $1200 total.");
   await page.keyboard.press("Enter");
 
   // Wait up to 90 seconds for stream to complete (no animate-spin left)

@@ -40,7 +40,7 @@ interface Turn {
 
 const SUGGESTIONS = [
   "Find me a quiet 1-bedroom in Lisbon near good restaurants for 3 nights in late June, under 130 a night, balcony if possible, and tell me which has the most consistent reviews.",
-  "Plan a 4-night Dubai trip for a couple, one mid-range hotel near the metro and one splurge night with a view. Budget AED 4000 total. Avoid Deira.",
+  "Plan a 4-night Los Angeles trip — one stay near the beach and one near downtown, budget $1200 total. Tell me which neighbourhoods to prioritise.",
 ];
 
 // ---------------------------------------------------------------------------

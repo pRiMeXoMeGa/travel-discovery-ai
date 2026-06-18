@@ -39,13 +39,22 @@ _KEY_AMENITY_PRIORITY = [
     "wifi", "pool", "hot_tub", "gym", "parking", "kitchen", "ac",
     "pets_allowed", "balcony", "breakfast_included", "workspace", "bbq",
 ]
+# Map free-text type words → the real Inside Airbnb room_type values stored in
+# listings.type (and the Qdrant payload). Keep keys lowercase.
 _TYPE_KEYWORDS = {
-    "apartment": "entire place",
-    "flat": "entire place",
-    "entire place": "entire place",
-    "private room": "private room",
-    "room": "private room",
-    "hotel": "hotel",
+    "apartment": "Entire home/apt",
+    "flat": "Entire home/apt",
+    "entire place": "Entire home/apt",
+    "entire home": "Entire home/apt",
+    "entire home/apt": "Entire home/apt",
+    "whole place": "Entire home/apt",
+    "house": "Entire home/apt",
+    "private room": "Private room",
+    "room": "Private room",
+    "hotel": "Hotel room",
+    "hotel room": "Hotel room",
+    "shared room": "Shared room",
+    "shared": "Shared room",
 }
 
 

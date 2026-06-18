@@ -36,7 +36,11 @@ DEV_N_REVIEWS = 5_000
 PROD_N_LISTINGS = 50_000
 PROD_N_REVIEWS = 200_000
 
-CITIES = ["Lisbon", "Dubai"]
+# NOTE: Synthetic generation is retired as the primary path.
+# The real Inside Airbnb CSV loader in ingest.py (--source real-csv) is now
+# the primary ingest path for Amsterdam, Lisbon, and Los Angeles.
+# This constant is preserved for backwards-compat / unit-test usage only.
+CITIES = ["Amsterdam", "Lisbon", "Los Angeles"]
 
 # Canonical amenity vocabulary (single source of truth; enrich.py normalises
 # raw strings to this list).
@@ -79,8 +83,20 @@ LANGUAGE_WEIGHTS: list[float] = [0.45, 0.20, 0.15, 0.10, 0.10]
 
 # ---------------------------------------------------------------------------
 # Per-city geographic bounding boxes  [lat_min, lat_max, lng_min, lng_max]
+# NOTE: Real data is loaded via the CSV loader in ingest.py; these bounds are
+# used only by the legacy synthetic generator (kept for backwards compat).
 # ---------------------------------------------------------------------------
 CITY_BOUNDS: dict[str, dict] = {
+    "Amsterdam": {
+        "lat": (52.29, 52.43),
+        "lng": (4.75, 5.03),
+        "neighbourhoods": [
+            "Centrum", "De Pijp", "Jordaan", "Oud-West", "Oud-Zuid",
+            "Oost", "Noord", "Westerpark", "Bos en Lommer", "Zeeburg",
+            "Slotervaart", "Geuzenveld-Slotermeer", "De Baarsjes", "Indische Buurt",
+        ],
+        "price_range": (60.0, 400.0),
+    },
     "Lisbon": {
         "lat": (38.68, 38.78),
         "lng": (-9.23, -9.08),
@@ -92,15 +108,15 @@ CITY_BOUNDS: dict[str, dict] = {
         # Base price range (€ / night) for this city.
         "price_range": (45.0, 320.0),
     },
-    "Dubai": {
-        "lat": (25.04, 25.28),
-        "lng": (55.10, 55.40),
+    "Los Angeles": {
+        "lat": (33.70, 34.35),
+        "lng": (-118.67, -118.15),
         "neighbourhoods": [
-            "Downtown Dubai", "Dubai Marina", "Jumeirah", "Palm Jumeirah",
-            "Business Bay", "DIFC", "Deira", "Bur Dubai", "Al Barsha",
-            "Dubai Hills", "Mirdif", "International City", "JVC", "JBR",
+            "Hollywood", "Silver Lake", "Echo Park", "Koreatown", "Downtown",
+            "Venice", "Santa Monica", "West Hollywood", "Los Feliz", "Silverlake",
+            "Eagle Rock", "Highland Park", "Culver City", "Mid-City", "Brentwood",
         ],
-        "price_range": (80.0, 650.0),
+        "price_range": (50.0, 500.0),
     },
 }
 

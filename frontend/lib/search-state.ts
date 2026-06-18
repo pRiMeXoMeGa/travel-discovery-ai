@@ -25,10 +25,10 @@ export const AMENITY_LABELS: Record<string, string> = {
 };
 
 export const PROPERTY_TYPE_LABELS: Record<string, string> = {
-  "entire place": "Entire place",
-  "private room": "Private room",
-  hotel: "Hotel",
-  "shared room": "Shared room",
+  "Entire home/apt": "Entire home/apt",
+  "Private room": "Private room",
+  "Shared room": "Shared room",
+  "Hotel room": "Hotel room",
 };
 
 export const SORT_LABELS: Record<string, string> = {
@@ -38,7 +38,7 @@ export const SORT_LABELS: Record<string, string> = {
   distance: "Nearest",
 };
 
-export const CITIES = ["Lisbon", "Dubai"];
+export const CITIES = ["Amsterdam", "Lisbon", "Los Angeles"];
 
 export function filtersToSearchParams(filters: SearchFilters): URLSearchParams {
   const p = new URLSearchParams();
@@ -83,7 +83,7 @@ export function searchParamsToFilters(p: URLSearchParams): SearchFilters {
 }
 
 export const DEFAULT_FILTERS: SearchFilters = {
-  city: "Lisbon",
+  city: "Amsterdam",
   adults: 2,
   rooms: 1,
   sort: "popularity",

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Documents the desired shape for the model. Fields are intentionally optional —
 # the model omits what it cannot determine rather than fabricating.
 _INTENT_SCHEMA = {
-    "city": "string | null  (the destination city, e.g. 'Lisbon', 'Dubai')",
+    "city": "string | null  (the destination city, e.g. 'Lisbon', 'Amsterdam', 'Los Angeles')",
     "check_in": "string | null  (ISO date YYYY-MM-DD, start of stay)",
     "check_out": "string | null  (ISO date YYYY-MM-DD, end of stay, exclusive)",
     "party_size": "integer | null  (number of guests)",

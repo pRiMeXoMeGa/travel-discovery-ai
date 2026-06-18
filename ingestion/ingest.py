@@ -1,6 +1,11 @@
 """Re-runnable ingestion pipeline (brief §2.1).
 
-End-to-end: schema → generate → enrich → embed → index.
+Two source paths — select with --source:
+  real-csv  (default) — loads real Inside Airbnb data from csvData/ for
+                         Amsterdam, Lisbon, and Los Angeles.
+  synthetic           — generates synthetic listings/reviews (legacy / testing).
+
+End-to-end: schema → load/generate → enrich → embed → index.
 Never loads the full corpus into memory: all stages stream/batch.
 
 Stores
@@ -10,11 +15,17 @@ Stores
 
 Usage
 -----
-    # Dev scale (default: 1 000 listings / 5 000 reviews)
-    python ingest.py
+    # Dev scale — real CSVs, ~2K listings / ~10K reviews (default)
+    python ingest.py --recreate-qdrant
+
+    # Full scale — real CSVs, all ~50K listings / ~200K reviews
+    python ingest.py --scale full --recreate-qdrant
 
     # Custom scale
-    python ingest.py --n-listings 50000 --n-reviews 200000
+    python ingest.py --n-listings 5000 --n-reviews 20000
+
+    # Synthetic data (legacy)
+    python ingest.py --source synthetic --n-listings 1000 --n-reviews 5000
 
     # Enable LLM enrichments (requires GEMINI_API_KEY)
     python ingest.py --use-llm
@@ -24,24 +35,29 @@ Usage
 
 Memory profile
 --------------
-Dev scale  (1 K listings /  5 K reviews): < 200 MB RAM.
-Prod scale (50 K listings / 200 K reviews): < 1 GB RAM (streamed in 256-item batches).
+Dev scale  (2 K listings / 10 K reviews): < 300 MB RAM.
+Prod scale (50 K listings / 200 K reviews): < 1.2 GB RAM (streamed in 256-item batches).
 
 Timing estimate (CPU only, no GPU)
 -----------------------------------
-Dev scale : < 5 min (including model download on first run).
-Prod scale: 30–90 min for embedding 250 K texts on a modern laptop CPU.
+Dev scale : < 10 min (including model download on first run).
+Prod scale: 60–120 min for embedding 250 K texts on a modern laptop CPU.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
+import hashlib
 import json
+import math
 import os
+import random
 import sys
 import time
 from pathlib import Path
-from typing import AsyncGenerator, Iterator
+from statistics import median
+from typing import Iterator
 
 import asyncpg
 from dotenv import load_dotenv
@@ -88,8 +104,15 @@ DISTANCE = Distance.COSINE
 # Increasing DB_BATCH reduces round-trips; keep ≤ 500 to avoid asyncpg param limits.
 DB_BATCH_LISTINGS  = 256
 DB_BATCH_REVIEWS   = 256
-EMBED_BATCH_SIZE   = 128   # fastembed processes this many texts at a time in ONNX
+EMBED_BATCH_SIZE   = 256   # fastembed processes this many texts at a time in ONNX
 QDRANT_UPSERT_BATCH = 256  # Qdrant HTTP payload size; 256 × 384 floats ≈ 400 KB
+
+# Real Airbnb reviews are long paragraphs; embedding them at bge-small's full
+# 512-token window is ~10x slower than short text and dominates the run
+# (3,391s for 10K reviews in the dry run). We embed only the leading chars —
+# the review's topic/sentiment is captured early — and keep the FULL text in
+# Postgres for display + citations. This is the key throughput fix.
+REVIEW_EMBED_CHARS = 320
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -207,8 +230,13 @@ def _listing_to_row(l: dict) -> tuple:
 def _review_to_row(r: dict) -> tuple:
     from datetime import date as _date
     d = r["date"]
-    if isinstance(d, str):
-        d = _date.fromisoformat(d)
+    if d is None:
+        pass  # Postgres DATE column accepts None → NULL
+    elif isinstance(d, str):
+        try:
+            d = _date.fromisoformat(d)
+        except ValueError:
+            d = None
     return (
         r["id"],
         r["listing_id"],
@@ -358,7 +386,573 @@ async def _make_llm_client():
 
 
 # ---------------------------------------------------------------------------
-# Stage: generate + insert listings
+# Real Inside Airbnb CSV loader
+# ---------------------------------------------------------------------------
+
+# City folder name → canonical city string stored in listings.city
+_CITY_FOLDER_MAP: dict[str, str] = {
+    "amsterdam":   "Amsterdam",
+    "lisbon":      "Lisbon",
+    "los angeles": "Los Angeles",
+}
+
+# Full-scale listing quotas per city (for --scale full)
+_CITY_FULL_QUOTAS: dict[str, int] = {
+    "Amsterdam":   10_480,
+    "Lisbon":      19_760,
+    "Los Angeles": 19_760,
+}
+
+# Dev-scale listing quotas (~660/city → total ~2,000)
+_CITY_DEV_QUOTAS: dict[str, int] = {
+    "Amsterdam":   660,
+    "Lisbon":      670,
+    "Los Angeles": 670,
+}
+
+
+def _stable_listing_id(raw_id: str) -> str:
+    """Convert a raw Airbnb integer listing ID to a stable UUID string.
+
+    We namespace the raw integer under a fixed UUID v5 namespace so the IDs
+    are compact, stable, and guaranteed unique across cities even if two cities
+    ever share an integer ID.
+    """
+    import uuid as _uuid
+    ns = _uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # URL namespace
+    return str(_uuid.uuid5(ns, f"airbnb:listing:{raw_id}"))
+
+
+def _stable_review_id(raw_id: str) -> str:
+    """Convert a raw Airbnb review integer ID to a stable UUID string."""
+    import uuid as _uuid
+    ns = _uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+    return str(_uuid.uuid5(ns, f"airbnb:review:{raw_id}"))
+
+
+def _clean_price(price_str: str) -> float | None:
+    """Strip $ / € / commas and parse to float; return None on failure."""
+    if not price_str:
+        return None
+    cleaned = price_str.strip().lstrip("$€£").replace(",", "")
+    try:
+        v = float(cleaned)
+        return v if v > 0 else None
+    except ValueError:
+        return None
+
+
+def _parse_beds(row: dict) -> int:
+    """Resolve beds from real CSV columns with fallback chain per contract."""
+    # 1. beds column
+    try:
+        v = int(float(row.get("beds", "") or 0))
+        if v > 0:
+            return v
+    except (ValueError, TypeError):
+        pass
+    # 2. bedrooms column
+    try:
+        v = int(float(row.get("bedrooms", "") or 0))
+        if v > 0:
+            return v
+    except (ValueError, TypeError):
+        pass
+    # 3. ceil(accommodates / 2), min 1
+    try:
+        acc = int(float(row.get("accommodates", "") or 2))
+        return max(1, math.ceil(acc / 2))
+    except (ValueError, TypeError):
+        return 1
+
+
+def _parse_rating(row: dict) -> float | None:
+    """Parse review_scores_rating; divide by 20 if > 5 (100-point scale)."""
+    raw = row.get("review_scores_rating", "").strip()
+    if not raw:
+        return None
+    try:
+        v = float(raw)
+        if v > 5:
+            v = v / 20.0
+        return round(max(0.0, min(5.0, v)), 2)
+    except ValueError:
+        return None
+
+
+def _parse_amenities(row: dict) -> list[str]:
+    """Parse JSON array of amenity strings from the CSV amenities column."""
+    raw = row.get("amenities", "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(a) for a in parsed]
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return []
+
+
+def _detect_language(text: str) -> str | None:
+    """Detect language of review text; cap at 500 chars for speed.
+
+    Returns ISO 639-1 code or None on failure/short text.
+    """
+    if not text or len(text.strip()) < 10:
+        return None
+    try:
+        from langdetect import detect, LangDetectException
+        return detect(text[:500])
+    except Exception:
+        return None
+
+
+class _CityPhotoPool:
+    """Deterministic per-city photo pool built from real picture_url values.
+
+    Built once per city from all listings' picture_url fields.  Each listing
+    gets a deterministic slice of ≥4 photos:
+      slot 0 = own picture_url (or pool fallback if empty)
+      slots 1-5 = other urls chosen by hash(listing_id) mod pool_size
+    """
+
+    def __init__(self) -> None:
+        self._pools: dict[str, list[str]] = {}
+
+    def add(self, city: str, url: str) -> None:
+        if url and url.strip():
+            self._pools.setdefault(city, []).append(url.strip())
+
+    def get_photos(self, city: str, listing_id: str, hero_url: str) -> list[str]:
+        pool = self._pools.get(city, [])
+        if not pool:
+            return [hero_url] if hero_url else []
+
+        # Deterministic index into pool via hash.
+        h = int(hashlib.md5(listing_id.encode()).hexdigest(), 16)
+        target_n = 5  # aim for 5 photos; min contract is 4
+
+        photos: list[str] = []
+        # Slot 0: hero
+        if hero_url and hero_url.strip():
+            photos.append(hero_url.strip())
+
+        # Fill remaining slots from pool, skipping hero to avoid duplicates.
+        pool_size = len(pool)
+        idx = h % pool_size
+        added = 0
+        for offset in range(pool_size):
+            if len(photos) >= target_n:
+                break
+            candidate = pool[(idx + offset) % pool_size]
+            if candidate not in photos:
+                photos.append(candidate)
+                added += 1
+
+        return photos
+
+
+def _stream_listings_csv(
+    city_folder: str,
+    city_name: str,
+    quota: int,
+    photo_pool: _CityPhotoPool,
+    seed: int = 42,
+) -> Iterator[dict]:
+    """Stream listing dicts from a city's listings.csv.
+
+    Selection: top-`quota` rows by number_of_reviews DESC (most-reviewed first),
+    then deterministic seeded sample among ties so the selection is stable
+    across re-runs with the same seed.
+
+    Memory: reads the file once to sort IDs (O(n_listings) integers), then
+    yields one row at a time via a second scan.  At 20K listings the ID list
+    is ~160 KB — negligible.
+    """
+    csv_path = Path(__file__).parent.parent / "csvData" / city_folder / "listings.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(f"listings.csv not found: {csv_path}")
+
+    # --- Pass 1: collect (review_count, id) pairs for ranking ---
+    id_rank: list[tuple[int, str]] = []   # (n_reviews_desc, raw_id)
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            raw_id = row.get("id", "").strip()
+            if not raw_id:
+                continue
+            try:
+                n_rev = int(float(row.get("number_of_reviews", "0") or 0))
+            except ValueError:
+                n_rev = 0
+            id_rank.append((n_rev, raw_id))
+
+    # Sort descending by review count; within ties use seeded random for
+    # deterministic ordering (not alphabetical, which would bias toward low IDs).
+    rng = random.Random(seed)
+    id_rank.sort(key=lambda x: (-x[0], rng.random()))
+
+    selected_raw_ids: set[str] = {raw_id for _, raw_id in id_rank[:quota]}
+
+    # --- Pass 2: build price map for median imputation ---
+    # We need city+room_type medians for price imputation, but this requires
+    # knowing prices for selected listings first.  We do a targeted scan.
+    price_by_type: dict[str, list[float]] = {}
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("id", "").strip() not in selected_raw_ids:
+                continue
+            rt = row.get("room_type", "").strip()
+            price = _clean_price(row.get("price", ""))
+            if price is not None:
+                price_by_type.setdefault(rt, []).append(price)
+
+    median_price: dict[str, float] = {
+        rt: median(prices) for rt, prices in price_by_type.items() if prices
+    }
+    global_median = median(
+        [p for prices in price_by_type.values() for p in prices]
+    ) if price_by_type else 100.0
+
+    # --- Pass 3: yield mapped listing dicts ---
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            raw_id = row.get("id", "").strip()
+            if raw_id not in selected_raw_ids:
+                continue
+
+            listing_id = _stable_listing_id(raw_id)
+
+            # Neighbourhood: prefer neighbourhood_cleansed, fallback neighbourhood.
+            neighbourhood = (
+                row.get("neighbourhood_cleansed", "").strip()
+                or row.get("neighbourhood", "").strip()
+                or "Unknown"
+            )
+
+            # Coordinates.
+            try:
+                lat = float(row.get("latitude", "0") or 0)
+                lng = float(row.get("longitude", "0") or 0)
+            except ValueError:
+                lat, lng = 0.0, 0.0
+
+            # Price with median imputation.
+            room_type = row.get("room_type", "").strip()
+            base_price = _clean_price(row.get("price", ""))
+            if base_price is None:
+                base_price = median_price.get(room_type, global_median)
+
+            # Beds.
+            beds = _parse_beds(row)
+
+            # Amenities: parse JSON array → normalize to 18-term vocab.
+            raw_amenities = _parse_amenities(row)
+            amenities = normalize_amenities(raw_amenities)
+
+            # Photos: build from hero + city pool.
+            hero_url = row.get("picture_url", "").strip()
+            # Register hero for pool (pool may not be built yet on first city pass,
+            # but _CityPhotoPool.get_photos only uses what was added before this call).
+            photos = photo_pool.get_photos(city_name, listing_id, hero_url)
+            # Guarantee ≥4 photos — if pool is sparse, pad with hero duplicated
+            # (unusual; only happens if city has < 4 total picture_urls).
+            while len(photos) < 4 and hero_url:
+                photos.append(hero_url)
+
+            # Host.
+            host = {
+                "id": row.get("host_id", "").strip(),
+                "name": row.get("host_name", "").strip(),
+                "superhost": row.get("host_is_superhost", "").strip().lower() == "t",
+            }
+
+            # Rating.
+            rating = _parse_rating(row)
+
+            # Review count.
+            try:
+                review_count = int(float(row.get("number_of_reviews", "0") or 0))
+            except ValueError:
+                review_count = 0
+
+            yield {
+                "id": listing_id,
+                "name": row.get("name", "").strip() or f"Listing {raw_id}",
+                "type": room_type,
+                "city": city_name,
+                "neighbourhood": neighbourhood,
+                "lat": lat,
+                "lng": lng,
+                "base_price": round(base_price, 2),
+                "beds": beds,
+                "amenities": amenities,
+                "photos": photos,
+                "host": host,
+                "rating": rating,
+                "review_count": review_count,
+                "neighbourhood_price_pct": None,
+                # Keep raw_id for review join.
+                "_raw_id": raw_id,
+            }
+
+
+def _stream_reviews_csv(
+    city_folder: str,
+    listing_id_map: dict[str, str],  # raw_id → stable_uuid
+    quota: int,
+    seed: int = 42,
+) -> Iterator[dict]:
+    """Stream review dicts from a city's reviews.csv.
+
+    Selects up to `quota` reviews from listings present in listing_id_map.
+    Selection: seeded uniform sample per listing, capped to keep total ≤ quota.
+    Language detected via langdetect from real comment text.
+
+    Memory: builds a {raw_listing_id: [review_rows]} index in-memory only for
+    selected listings.  At 3,300 reviews × ~300 chars avg ≈ ~1 MB — fine.
+    At full scale (66K reviews/city) budget is ~20 MB per city — acceptable.
+    """
+    csv_path = Path(__file__).parent.parent / "csvData" / city_folder / "reviews.csv"
+    if not csv_path.exists():
+        print(f"[warn] reviews.csv not found for {city_folder} — skipping reviews.")
+        return
+
+    selected_listing_ids = set(listing_id_map.keys())
+
+    # Collect all review rows for selected listings.
+    reviews_by_listing: dict[str, list[dict]] = {}
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            lid = row.get("listing_id", "").strip()
+            if lid not in selected_listing_ids:
+                continue
+            text = row.get("comments", "").strip()
+            if not text:
+                continue
+            reviews_by_listing.setdefault(lid, []).append(row)
+
+    # Seeded sample: distribute quota proportionally across listings.
+    rng = random.Random(seed + 7)
+    # Shuffle each listing's reviews deterministically.
+    for lid in reviews_by_listing:
+        rng.shuffle(reviews_by_listing[lid])
+
+    # Interleave: round-robin across listings (evens out distribution).
+    listing_order = sorted(reviews_by_listing.keys())  # stable sort
+    rng.shuffle(listing_order)  # then seeded shuffle
+
+    pointers = {lid: 0 for lid in listing_order}
+    emitted = 0
+
+    while emitted < quota:
+        advanced = False
+        for lid in listing_order:
+            if emitted >= quota:
+                break
+            rows = reviews_by_listing.get(lid, [])
+            ptr = pointers[lid]
+            if ptr >= len(rows):
+                continue
+            row = rows[ptr]
+            pointers[lid] = ptr + 1
+            advanced = True
+
+            raw_review_id = row.get("id", "").strip()
+            review_id = _stable_review_id(raw_review_id) if raw_review_id else _stable_review_id(f"{lid}:{ptr}")
+            stable_listing_id = listing_id_map[lid]
+
+            text = row.get("comments", "").strip()
+            language = _detect_language(text)
+
+            date_str = row.get("date", "").strip() or None
+
+            yield {
+                "id": review_id,
+                "listing_id": stable_listing_id,
+                "date": date_str,
+                "reviewer": row.get("reviewer_name", "").strip() or None,
+                "rating": None,   # reviews.csv has no per-review star rating
+                "text": text,
+                "language": language,
+                "aspects": None,  # filled by aspect_sentiment enrichment
+                "sentiment": None,
+            }
+            emitted += 1
+
+        if not advanced:
+            break  # exhausted all reviews for selected listings
+
+
+# ---------------------------------------------------------------------------
+# Stage: load real CSVs → Postgres
+# ---------------------------------------------------------------------------
+
+async def stage_real_csv_listings(
+    pool: asyncpg.Pool,
+    city_folders: list[str],
+    quotas: dict[str, int],
+    seed: int = 42,
+) -> dict[str, dict[str, str]]:
+    """Load real Airbnb listings from CSVs into Postgres.
+
+    Builds a two-pass per-city photo pool: first pass collects all picture_urls
+    for selected listings, second pass assigns photos using the full pool.
+
+    Returns: {city_folder: {raw_id: stable_uuid}} for review join.
+    Memory: O(selected_listing_count) for photo pool + ID map.
+    """
+    print("\n[listings] loading from real Inside Airbnb CSVs…")
+    t0 = time.time()
+    total_inserted = 0
+    city_id_maps: dict[str, dict[str, str]] = {}
+
+    for city_folder in city_folders:
+        city_name = _CITY_FOLDER_MAP[city_folder]
+        quota = quotas.get(city_name, 0)
+        print(f"  [listings] {city_name}: quota={quota:,}")
+
+        # --- Phase A: build photo pool for this city ---
+        # We need a single pre-pass to collect all picture_urls so the pool is
+        # available when we actually stream listing rows.
+        photo_pool = _CityPhotoPool()
+        csv_path = Path(__file__).parent.parent / "csvData" / city_folder / "listings.csv"
+
+        # Collect raw IDs for the quota (same ranking logic as _stream_listings_csv).
+        id_rank: list[tuple[int, str]] = []
+        with open(csv_path, encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                raw_id = row.get("id", "").strip()
+                if not raw_id:
+                    continue
+                try:
+                    n_rev = int(float(row.get("number_of_reviews", "0") or 0))
+                except ValueError:
+                    n_rev = 0
+                id_rank.append((n_rev, raw_id))
+
+        rng = random.Random(seed)
+        id_rank.sort(key=lambda x: (-x[0], rng.random()))
+        selected_raw_ids: set[str] = {raw_id for _, raw_id in id_rank[:quota]}
+
+        # Build photo pool from selected listings' picture_urls.
+        with open(csv_path, encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                raw_id = row.get("id", "").strip()
+                if raw_id not in selected_raw_ids:
+                    continue
+                url = row.get("picture_url", "").strip()
+                if url:
+                    photo_pool.add(city_name, url)
+
+        # --- Phase B: stream + insert listings ---
+        batch: list[dict] = []
+        raw_id_map: dict[str, str] = {}  # raw_id → stable_uuid
+        city_count = 0
+
+        for listing in tqdm(
+            _stream_listings_csv(city_folder, city_name, quota, photo_pool, seed),
+            total=quota,
+            desc=f"  {city_name}",
+            unit="listing",
+        ):
+            raw_id = listing.pop("_raw_id")
+            raw_id_map[raw_id] = listing["id"]
+            batch.append(listing)
+            city_count += 1
+
+            if len(batch) >= DB_BATCH_LISTINGS:
+                await insert_listings_batch(pool, batch)
+                total_inserted += len(batch)
+                batch = []
+
+        if batch:
+            await insert_listings_batch(pool, batch)
+            total_inserted += len(batch)
+
+        city_id_maps[city_folder] = raw_id_map
+        print(f"  [listings] {city_name}: {city_count} rows loaded.")
+
+    elapsed = time.time() - t0
+    print(f"[listings] total {total_inserted} rows in {elapsed:.1f}s.")
+    return city_id_maps
+
+
+async def stage_real_csv_reviews(
+    pool: asyncpg.Pool,
+    city_folders: list[str],
+    city_id_maps: dict[str, dict[str, str]],
+    review_quotas: dict[str, int],
+    seed: int = 42,
+    use_llm: bool = False,
+    llm_client=None,
+) -> None:
+    """Load real Airbnb reviews from CSVs, detect language, enrich, insert.
+
+    Memory: O(review_quota/city × avg_row_size) — at 3,300 reviews × 300 chars
+    that is ~1 MB per city batch pass.
+    """
+    print("\n[reviews] loading from real Inside Airbnb CSVs…")
+    t0 = time.time()
+    total_inserted = 0
+
+    for city_folder in city_folders:
+        city_name = _CITY_FOLDER_MAP[city_folder]
+        listing_id_map = city_id_maps.get(city_folder, {})
+        if not listing_id_map:
+            print(f"  [reviews] {city_name}: no listings loaded — skipping.")
+            continue
+
+        quota = review_quotas.get(city_name, 0)
+        print(f"  [reviews] {city_name}: quota={quota:,}, listing pool={len(listing_id_map):,}")
+
+        batch: list[dict] = []
+        city_count = 0
+
+        for review in tqdm(
+            _stream_reviews_csv(city_folder, listing_id_map, quota, seed),
+            total=quota,
+            desc=f"  {city_name}",
+            unit="review",
+        ):
+            batch.append(review)
+            if len(batch) >= DB_BATCH_REVIEWS:
+                # Aspect sentiment enrichment on batch.
+                pairs = [(r["id"], r["text"]) for r in batch]
+                sentiments = await aspect_sentiment_batch(
+                    pairs, use_llm=use_llm, llm_client=llm_client
+                )
+                for r in batch:
+                    info = sentiments.get(r["id"], {"aspects": None, "sentiment": None})
+                    r["aspects"] = info.get("aspects")
+                    r["sentiment"] = info.get("sentiment")
+
+                await insert_reviews_batch(pool, batch)
+                total_inserted += len(batch)
+                city_count += len(batch)
+                batch = []
+
+        if batch:
+            pairs = [(r["id"], r["text"]) for r in batch]
+            sentiments = await aspect_sentiment_batch(
+                pairs, use_llm=use_llm, llm_client=llm_client
+            )
+            for r in batch:
+                info = sentiments.get(r["id"], {"aspects": None, "sentiment": None})
+                r["aspects"] = info.get("aspects")
+                r["sentiment"] = info.get("sentiment")
+            await insert_reviews_batch(pool, batch)
+            total_inserted += len(batch)
+            city_count += len(batch)
+
+        print(f"  [reviews] {city_name}: {city_count} rows loaded.")
+
+    elapsed = time.time() - t0
+    print(f"[reviews] total {total_inserted} rows in {elapsed:.1f}s.")
+
+
+# ---------------------------------------------------------------------------
+# Stage: generate + insert listings (synthetic — legacy)
 # ---------------------------------------------------------------------------
 
 async def stage_listings(
@@ -593,7 +1187,8 @@ async def stage_embed_reviews(
 
             with tqdm(total=count, unit="review") as pbar:
                 async for row in cur:
-                    text_buf.append(row["text"])
+                    # Truncate for embedding only; full text stays in Postgres.
+                    text_buf.append((row["text"] or "")[:REVIEW_EMBED_CHARS])
                     row_buf.append(row)
                     if len(text_buf) >= embed_batch:
                         await flush()
@@ -727,27 +1322,42 @@ async def stage_snapshot(pool: asyncpg.Pool) -> None:
 # ---------------------------------------------------------------------------
 
 async def run(
+    source: str,
     n_listings: int,
     n_reviews: int,
     seed: int,
     use_llm: bool,
     snapshot: bool,
     recreate_qdrant: bool,
+    listing_quotas: dict[str, int] | None = None,
+    review_quotas: dict[str, int] | None = None,
 ) -> None:
-    cfg = GenConfig(
-        n_listings=n_listings,
-        n_reviews=n_reviews,
-        seed=seed,
-        # Review TEXT always comes from the offline multilingual templates.
-        # `--use-llm` controls ENRICHMENT (aspect sentiment) only — it must NOT
-        # turn on use_llm_reviews, which emits unimplemented [LLM_PLACEHOLDER]
-        # text. (LLM-generated review text is a separate, unbuilt feature.)
-        use_llm_reviews=False,
-    )
+    """Run the full ingestion pipeline.
+
+    Parameters
+    ----------
+    source          : 'real-csv' (default) or 'synthetic' (legacy).
+    n_listings      : Total listing target (used for synthetic mode; for real-csv
+                      mode, listing_quotas overrides this per city).
+    n_reviews       : Total review target (used for synthetic mode; for real-csv
+                      mode, review_quotas overrides this per city).
+    listing_quotas  : Per-city listing counts for real-csv mode.
+    review_quotas   : Per-city review counts for real-csv mode.
+    """
+    # City folders to process in real-csv mode.
+    city_folders = list(_CITY_FOLDER_MAP.keys())  # ['amsterdam', 'lisbon', 'los angeles']
+
+    total_listings = sum(listing_quotas.values()) if listing_quotas else n_listings
+    total_reviews  = sum(review_quotas.values())  if review_quotas  else n_reviews
 
     print("=" * 60)
-    print(f"Travel Discovery AI — Ingestion Pipeline")
-    print(f"  Scale     : {n_listings:,} listings / {n_reviews:,} reviews")
+    print("Travel Discovery AI — Ingestion Pipeline")
+    print(f"  Source    : {source}")
+    print(f"  Scale     : {total_listings:,} listings / {total_reviews:,} reviews")
+    if listing_quotas:
+        for city, q in listing_quotas.items():
+            rq = (review_quotas or {}).get(city, 0)
+            print(f"    {city:<15}: {q:,} listings / {rq:,} reviews")
     print(f"  Seed      : {seed}")
     print(f"  LLM       : {'enabled' if use_llm else 'disabled (heuristic mode)'}")
     print(f"  DB        : {DATABASE_URL}")
@@ -768,22 +1378,51 @@ async def run(
         async with pool.acquire() as conn:
             await apply_schema(conn)
 
-        # 3. Qdrant collections.
+        # 3. Wipe existing data (always when loading real CSVs to replace synthetic).
+        if recreate_qdrant or source == "real-csv":
+            print("\n[init] truncating existing listings/reviews (TRUNCATE CASCADE)…")
+            async with pool.acquire() as conn:
+                await conn.execute("TRUNCATE listings CASCADE")
+            print("[init] tables cleared.")
+
+        # 4. Qdrant collections.
         await ensure_collection(qdrant, COLLECTION_LISTINGS, recreate=recreate_qdrant)
         await ensure_collection(qdrant, COLLECTION_REVIEWS,  recreate=recreate_qdrant)
 
-        # 4. LLM client (optional).
+        # 5. LLM client (optional).
         llm_client = None
         if use_llm:
             llm_client = await _make_llm_client()
             if llm_client is None:
                 print("[llm] No API key found — running in heuristic mode.")
 
-        # 5. Generate + insert listings.
-        listing_ids = await stage_listings(pool, cfg)
-
-        # 6. Generate + insert reviews (with aspect sentiment).
-        await stage_reviews(pool, cfg, listing_ids, use_llm=use_llm, llm_client=llm_client)
+        # 6. Load listings + reviews.
+        if source == "real-csv":
+            city_id_maps = await stage_real_csv_listings(
+                pool,
+                city_folders=city_folders,
+                quotas=listing_quotas or {},
+                seed=seed,
+            )
+            await stage_real_csv_reviews(
+                pool,
+                city_folders=city_folders,
+                city_id_maps=city_id_maps,
+                review_quotas=review_quotas or {},
+                seed=seed,
+                use_llm=use_llm,
+                llm_client=llm_client,
+            )
+        else:
+            # Synthetic path (legacy).
+            cfg = GenConfig(
+                n_listings=n_listings,
+                n_reviews=n_reviews,
+                seed=seed,
+                use_llm_reviews=False,
+            )
+            listing_ids = await stage_listings(pool, cfg)
+            await stage_reviews(pool, cfg, listing_ids, use_llm=use_llm, llm_client=llm_client)
 
         # 7. Neighbourhood price percentile (pure SQL).
         print("\n[enrich] computing neighbourhood price percentiles…")
@@ -791,11 +1430,7 @@ async def run(
             updated = await neighbourhood_price_percentile(conn)
         print(f"[enrich] price percentile updated for {updated} listings.")
 
-        # 8. Per-property summaries.
-        # Kept heuristic even when --use-llm is set: summaries are ~750 calls
-        # (the bulk of LLM usage) and lower-value than aspect sentiment, so we
-        # conserve the free-tier daily quota for aspects + the runtime concierge.
-        # Flip to use_llm=use_llm (or gate on LLM_SUMMARIES) to LLM-summarize.
+        # 8. Per-property summaries (heuristic default; LLM optional).
         summaries_use_llm = use_llm and os.environ.get("LLM_SUMMARIES") == "1"
         await stage_summaries(pool, use_llm=summaries_use_llm, llm_client=llm_client)
 
@@ -825,59 +1460,128 @@ async def run(
 # ---------------------------------------------------------------------------
 
 def _parse_args() -> argparse.Namespace:
-    from generate import DEV_N_LISTINGS, DEV_N_REVIEWS, PROD_N_LISTINGS, PROD_N_REVIEWS
-
     parser = argparse.ArgumentParser(
         description="Travel Discovery AI — ingestion pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python ingest.py                          # dev scale (1 K / 5 K)\n"
-            "  python ingest.py --scale full             # 50 K / 200 K\n"
-            "  python ingest.py --n-listings 5000 --n-reviews 20000\n"
-            "  python ingest.py --use-llm --snapshot\n"
+            "  # DEV dry-run — real CSVs, ~2K listings / ~10K reviews\n"
+            "  python ingest.py --recreate-qdrant\n\n"
+            "  # FULL scale — real CSVs, all ~50K listings / ~200K reviews\n"
+            "  python ingest.py --scale full --recreate-qdrant\n\n"
+            "  # Custom scale (real-csv mode)\n"
+            "  python ingest.py --n-listings 5000 --n-reviews 20000\n\n"
+            "  # Synthetic data (legacy)\n"
+            "  python ingest.py --source synthetic --n-listings 1000 --n-reviews 5000\n\n"
+            "  # Enable LLM enrichments (requires GEMINI_API_KEY)\n"
+            "  python ingest.py --use-llm\n\n"
+            "  # Export snapshot\n"
+            "  python ingest.py --snapshot\n"
         ),
     )
+
+    parser.add_argument(
+        "--source",
+        choices=["real-csv", "synthetic"],
+        default="real-csv",
+        help="Data source: 'real-csv' (default) = Inside Airbnb CSVs; 'synthetic' = legacy generator.",
+    )
+
     scale_group = parser.add_mutually_exclusive_group()
     scale_group.add_argument(
         "--scale",
         choices=["dev", "full"],
         default=None,
-        help="'dev' = 1K/5K (default); 'full' = 50K/200K.",
+        help=(
+            "Preset scale for real-csv mode. "
+            "'dev' = ~2K listings / ~10K reviews (default); "
+            "'full' = Amsterdam:10,480 + Lisbon:19,760 + LA:19,760 / ~200K reviews."
+        ),
     )
-    scale_group.add_argument("--n-listings", type=int, default=None)
-    parser.add_argument("--n-reviews", type=int, default=None)
+    scale_group.add_argument(
+        "--n-listings",
+        type=int,
+        default=None,
+        help="Total listing count (split equally across 3 cities in real-csv mode).",
+    )
+    parser.add_argument(
+        "--n-reviews",
+        type=int,
+        default=None,
+        help="Total review count (split equally across 3 cities).",
+    )
     parser.add_argument("--seed", type=int, default=42, help="RNG seed (default: 42).")
     parser.add_argument("--use-llm", action="store_true", help="Enable LLM enrichments.")
     parser.add_argument("--snapshot", action="store_true", help="Export pg_dump + Qdrant snapshot.")
-    parser.add_argument("--recreate-qdrant", action="store_true",
-                        help="Drop and recreate Qdrant collections (destructive).")
+    parser.add_argument(
+        "--recreate-qdrant",
+        action="store_true",
+        help="Drop and recreate Qdrant collections (destructive).",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
-    from generate import DEV_N_LISTINGS, DEV_N_REVIEWS, PROD_N_LISTINGS, PROD_N_REVIEWS
-
     args = _parse_args()
 
-    if args.scale == "full":
-        n_listings = PROD_N_LISTINGS
-        n_reviews  = PROD_N_REVIEWS
-    elif args.n_listings is not None:
-        n_listings = args.n_listings
-        n_reviews  = args.n_reviews or (args.n_listings * 5)
+    # Resolve per-city quotas.
+    listing_quotas: dict[str, int] | None = None
+    review_quotas:  dict[str, int] | None = None
+    n_listings = 0
+    n_reviews  = 0
+
+    if args.source == "real-csv":
+        if args.scale == "full":
+            listing_quotas = dict(_CITY_FULL_QUOTAS)
+        elif args.n_listings is not None:
+            # Distribute evenly across 3 cities.
+            per_city_l = args.n_listings // 3
+            rem_l = args.n_listings % 3
+            cities_ordered = list(_CITY_FOLDER_MAP.values())
+            listing_quotas = {c: per_city_l + (1 if i < rem_l else 0)
+                              for i, c in enumerate(cities_ordered)}
+        else:
+            # Default: dev scale.
+            listing_quotas = dict(_CITY_DEV_QUOTAS)
+
+        # Review quotas: default 5 reviews per listing per city.
+        if args.n_reviews is not None:
+            per_city_r = args.n_reviews // 3
+            rem_r = args.n_reviews % 3
+            cities_ordered = list(_CITY_FOLDER_MAP.values())
+            review_quotas = {c: per_city_r + (1 if i < rem_r else 0)
+                             for i, c in enumerate(cities_ordered)}
+        elif args.scale == "full":
+            review_quotas = {c: 66_667 for c in _CITY_FULL_QUOTAS}
+        else:
+            # Dev: ~5× listing quota per city.
+            review_quotas = {c: q * 5 for c, q in listing_quotas.items()}
+
+        n_listings = sum(listing_quotas.values())
+        n_reviews  = sum(review_quotas.values())
     else:
-        # Default: dev scale.
-        n_listings = DEV_N_LISTINGS
-        n_reviews  = args.n_reviews or DEV_N_REVIEWS
+        # Synthetic path.
+        from generate import DEV_N_LISTINGS, DEV_N_REVIEWS, PROD_N_LISTINGS, PROD_N_REVIEWS
+        if args.scale == "full":
+            n_listings = PROD_N_LISTINGS
+            n_reviews  = PROD_N_REVIEWS
+        elif args.n_listings is not None:
+            n_listings = args.n_listings
+            n_reviews  = args.n_reviews or (args.n_listings * 5)
+        else:
+            n_listings = DEV_N_LISTINGS
+            n_reviews  = args.n_reviews or DEV_N_REVIEWS
 
     asyncio.run(
         run(
+            source=args.source,
             n_listings=n_listings,
             n_reviews=n_reviews,
             seed=args.seed,
             use_llm=args.use_llm,
             snapshot=args.snapshot,
             recreate_qdrant=args.recreate_qdrant,
+            listing_quotas=listing_quotas,
+            review_quotas=review_quotas,
         )
     )
