@@ -131,7 +131,7 @@ Produce/refresh the artifacts yourself with `bash scripts/export_data.sh` (write
 
 ## Rough cost per query (back-of-envelope)
 
-Measured from a live concierge trace: ~**800 input / ~270 output tokens** per multi-agent query (intent + itinerary/synthesis + answer). At Gemini 3.1 Flash-Lite rates (~$0.10 / $0.40 per 1M in/out, approximate):
+Measured from a live concierge trace: **800 input / ~270 output tokens** per multi-agent query (intent + itinerary/synthesis + answer). At Gemini 3.1 Flash-Lite rates ($0.10 / $0.40 per 1M in/out, approximate):
 
 - **Traditional search/filter:** **$0** (no LLM; query embedding is local).
 - **NL search (intent only):** ~**$0.0001**/query.
