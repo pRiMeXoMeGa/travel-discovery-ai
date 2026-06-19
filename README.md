@@ -96,12 +96,16 @@ The ingestion pipeline (`ingestion/ingest.py`, re-runnable) parses the CSVs, cle
 
 ```bash
 cp .env.example .env          # set GEMINI_API_KEY (or LLM_PROVIDER=anthropic + ANTHROPIC_API_KEY)
-docker compose up --build     # postgres + qdrant + redis + backend + frontend
+docker compose up -d --build  # postgres + qdrant + redis + backend + frontend
 # Load data — either:
-#  (a) restore the pre-built Postgres dump + Qdrant snapshot (fast), or
-#  (b) place the Inside Airbnb detailed CSVs in csvData/{amsterdam,lisbon,los angeles}/ and run:
+#  (a) restore the pre-built Postgres dump + Qdrant snapshot (fast):
+gh release download deploy-data-v1 -D dumps   # fetch artifacts from the GitHub Release
+bash scripts/restore_local.sh                 # pg_restore + Qdrant snapshot recover
+#  (b) OR re-ingest from the Inside Airbnb detailed CSVs in csvData/{amsterdam,lisbon,los angeles}/:
 docker compose run --rm ingestion python ingest.py --scale full --recreate-qdrant
 ```
+
+Produce/refresh the artifacts yourself with `bash scripts/export_data.sh` (writes `dumps/`), then `bash scripts/publish_artifacts.sh` to push them to the Release.
 
 - Frontend: http://localhost:3000 · Backend + docs: http://localhost:8000/docs
 - The raw CSVs (~1.5 GB) are **not** committed (gitignored). For a clean reproduction, download them from [Inside Airbnb](https://insideairbnb.com/get-the-data/) into `csvData/`, or restore the dump+snapshot. See [ingestion/README.md](./ingestion/README.md).
@@ -119,7 +123,6 @@ docker compose run --rm ingestion python ingest.py --scale full --recreate-qdran
 
 - **Embed all 200K reviews** for full per-review semantic search — on a GPU box or via a cloud embedding API (the only real blocker here is the 4-core CPU).
 - **LLM (or fine-tuned) multilingual aspect sentiment** + LLM per-property summaries at a paid tier.
-- Ship a **pre-built dump + Qdrant snapshot** so `docker compose up` restores in seconds without the raw CSVs.
 - Move deployment to a **single always-on VM** (Oracle Always-Free / Hetzner ~€4/mo) running the exact `docker-compose`.
 - **Materialized calendar** (or PostGIS) so availability filtering is pre-pagination; migrate Qdrant `.search` → `query_points`.
 
@@ -147,9 +150,30 @@ _Actual hours: TODO — fill in before submission._
 
 ## Deployment (Path A — free tier)
 
-Stand up data stores first, backend next, frontend last.
+Managed PaaS, no VM/SSH/manual TLS. **Order matters — data stores first, backend next, frontend last.** Infra is declared in [`render.yaml`](./render.yaml) (backend Blueprint); Vercel deploys the frontend git-natively.
 
-1. **Data stores** — create a **Neon** Postgres project, a **Qdrant Cloud** free cluster (1 GB), and an **Upstash** Redis database; copy each connection string. Restore the pre-built Postgres dump + Qdrant snapshot (don't re-ingest against a remote DB).
-2. **Backend (Render)** — New → Web Service → connect the repo (builds `backend/Dockerfile`). Set env vars: `DATABASE_URL`, `QDRANT_URL` + `QDRANT_API_KEY`, `REDIS_URL`, `GEMINI_API_KEY`, `GEMINI_MODEL` (+ `ANTHROPIC_API_KEY`). Never bake keys into the image. Add a cron ping to `/health` (~10 min) to defeat free-tier spin-down.
-3. **Frontend (Vercel)** — import the repo (`frontend/`), set `NEXT_PUBLIC_API_URL` to the Render URL.
-4. **Wire + verify** — lock backend CORS to the Vercel origin; confirm SSE streams over HTTPS end-to-end (no mixed-content, no proxy buffering).
+1. **Provision data stores** — create a **Neon** Postgres project, a **Qdrant Cloud** free cluster (1 GB), and an **Upstash** Redis database; copy each connection string + the Qdrant API key.
+2. **Restore data (not re-ingest)** — fetch the pre-built artifacts and restore to the cloud stores:
+   ```bash
+   gh release download deploy-data-v1 -D dumps
+   export DATABASE_URL='postgresql://…neon.tech/neondb?sslmode=require'
+   export QDRANT_URL='https://…cloud.qdrant.io:6333'  QDRANT_API_KEY='…'
+   bash scripts/restore_remote.sh        # restores Neon + Qdrant Cloud, prints counts
+   ```
+3. **Backend (Render)** — New → **Blueprint** → connect the repo (reads `render.yaml`, builds `backend/Dockerfile`). Fill the `sync: false` env vars in the dashboard (see table below) — **never bake keys into the image**. Add a [cron-job.org](https://cron-job.org) ping to `/health` every ~10 min to defeat the 15-min free-tier spin-down.
+4. **Frontend (Vercel)** — import the repo, set **Root Directory = `frontend/`**, and `NEXT_PUBLIC_API_URL` = the Render URL.
+5. **Wire + verify** — set `CORS_ORIGINS` on Render to the `https://<app>.vercel.app` origin; confirm SSE streams over HTTPS end-to-end (no mixed-content, no proxy buffering — the SSE route sends `X-Accel-Buffering: no`).
+
+**Secrets checklist** (set in the Render dashboard; values never committed):
+
+| Env var | Source | Where to set |
+|---|---|---|
+| `DATABASE_URL` | Neon → connection string | Render |
+| `QDRANT_URL` + `QDRANT_API_KEY` | Qdrant Cloud → cluster URL + API key | Render |
+| `REDIS_URL` | Upstash → `rediss://` URL | Render |
+| `GEMINI_API_KEY` | Google AI Studio | Render |
+| `ANTHROPIC_API_KEY` | console.anthropic.com (optional fallback) | Render |
+| `CORS_ORIGINS` | your Vercel origin, e.g. `https://app.vercel.app` | Render |
+| `NEXT_PUBLIC_API_URL` | the Render backend URL | Vercel |
+
+Non-secret vars (`LLM_PROVIDER`, `GEMINI_MODEL`, `EMBEDDING_*`, `CACHE_TTL_SECONDS`) are pre-set in `render.yaml`.

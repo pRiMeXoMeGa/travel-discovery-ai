@@ -1,0 +1,48 @@
+# Render Blueprint — backend (FastAPI, Docker, long-lived for SSE).
+# Deploy: Render dashboard → New → Blueprint → connect this repo → Apply,
+# then fill the secret values for the env vars marked `sync: false`.
+#
+# The frontend deploys on Vercel (git-native, not described here): import the
+# repo, set Root Directory = frontend, and NEXT_PUBLIC_API_URL = this service URL.
+#
+# NOTE: no secret values live in this file — only declarations. Set real values
+# in the Render dashboard.
+services:
+  - type: web
+    name: travel-discovery-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free            # 512 MB / spins down after 15 min idle — keep-warm via cron-job.org → /health
+    region: oregon        # match your data-store regions to cut latency
+    healthCheckPath: /health
+    autoDeploy: true      # redeploy on push to the connected branch
+    envVars:
+      # ── Non-secret defaults (safe to commit) ─────────────────────────────
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      - key: ANTHROPIC_MODEL
+        value: claude-haiku-4-5-20251001
+      - key: CACHE_TTL_SECONDS
+        value: "3600"
+      - key: EMBEDDING_MODEL
+        value: BAAI/bge-small-en-v1.5
+      - key: EMBEDDING_DIM
+        value: "384"
+      # ── Secrets / per-deploy values — set in the dashboard ───────────────
+      - key: DATABASE_URL          # Neon Postgres connection string
+        sync: false
+      - key: QDRANT_URL            # Qdrant Cloud cluster URL
+        sync: false
+      - key: QDRANT_API_KEY        # Qdrant Cloud API key
+        sync: false
+      - key: REDIS_URL             # Upstash rediss:// URL
+        sync: false
+      - key: GEMINI_API_KEY        # Google AI Studio key
+        sync: false
+      - key: ANTHROPIC_API_KEY     # optional fallback provider key
+        sync: false
+      - key: CORS_ORIGINS          # set to your https://<app>.vercel.app origin
+        sync: false

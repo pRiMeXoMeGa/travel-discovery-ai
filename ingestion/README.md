@@ -127,8 +127,10 @@ python ingest.py --use-llm
 # Synthetic data (legacy/testing only)
 python ingest.py --source synthetic --n-listings 1000 --n-reviews 5000
 
-# Export snapshot (placeholder — Phase 2)
-python ingest.py --snapshot
+# Export pre-built artifacts (pg_dump + Qdrant snapshots) into dumps/
+python ingest.py --snapshot          # delegates to scripts/export_data.sh
+# …or run the script directly from the host:
+bash ../scripts/export_data.sh
 ```
 
 ### Via Docker (production-style)
@@ -178,7 +180,7 @@ Quality spot-checks (verified):
 - Full scale (Option A: 50K listings + 50K summaries = ~100K vectors): embed ~3–4 h + load/enrich ~2 h ≈ **~5 h** CPU-only.
 - Pipeline is safe to re-run: `TRUNCATE listings CASCADE` before each run (real-csv mode always wipes), then upserts guard against partial re-inserts.
 - Deterministic: same seed + same CSV content → identical IDs, same sampling selection.
-- Run once at full scale, then export a **Postgres dump + Qdrant snapshot** so `docker compose up` restores in seconds (Phase 2).
+- Run once at full scale, then export a **Postgres dump + Qdrant snapshot** (`scripts/export_data.sh`) and publish to a GitHub Release (`scripts/publish_artifacts.sh`) so `docker compose up` + `scripts/restore_local.sh` restores in seconds without the raw CSVs.
 
 ## LLM cost (informational)
 

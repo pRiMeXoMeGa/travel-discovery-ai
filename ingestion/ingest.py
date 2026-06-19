@@ -1364,22 +1364,38 @@ async def verify_counts(
 
 
 # ---------------------------------------------------------------------------
-# Snapshot (placeholder)
+# Snapshot
 # ---------------------------------------------------------------------------
 
 async def stage_snapshot(pool: asyncpg.Pool) -> None:
     """Export pg_dump + Qdrant snapshot for fast `docker compose up` restore.
 
-    Not implemented in Phase 1 — wired as a placeholder so --snapshot is
-    accepted without error.  The actual implementation depends on having
-    docker-in-docker or exec access to the Postgres container.
+    Delegates to scripts/export_data.sh — the single source of truth for the
+    artifact format (Postgres custom-format dump via the postgres container's
+    pg_dump + one Qdrant snapshot per collection over the HTTP API). pg_dump
+    needs `docker compose exec`, which is a host operation, so when this runs
+    from inside the ingestion container we print the host command instead of
+    failing.
     """
+    import shutil
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[1]
+    script = repo_root / "scripts" / "export_data.sh"
+
+    if shutil.which("docker") and script.exists():
+        print(f"\n[snapshot] running {script} …")
+        try:
+            subprocess.run(["bash", str(script)], cwd=str(repo_root), check=True)
+            return
+        except subprocess.CalledProcessError as exc:
+            print(f"[snapshot] export script failed ({exc}); see manual steps below.")
+
     print(
-        "\n[snapshot] --snapshot requested. Placeholder: pg_dump and Qdrant snapshot "
-        "export will be implemented in Phase 2.  For now, manually run:\n"
-        "  docker compose exec postgres pg_dump -U travel travel > backup.sql\n"
-        "  curl -X POST http://localhost:6333/collections/listings/snapshots\n"
-        "  curl -X POST http://localhost:6333/collections/reviews/snapshots\n"
+        "\n[snapshot] Run the export from the host (needs docker compose access):\n"
+        "  bash scripts/export_data.sh\n"
+        "This writes dumps/travel.dump + dumps/<collection>.snapshot, then publish\n"
+        "with: bash scripts/publish_artifacts.sh\n"
     )
 
 

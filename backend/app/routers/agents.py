@@ -25,7 +25,14 @@ async def concierge_stream(req: ConciergeRequest) -> EventSourceResponse:
         except Exception as exc:  # graceful failure (brief §3)
             yield {"event": "error", "data": json.dumps({"message": str(exc)})}
 
-    return EventSourceResponse(event_gen())
+    # Disable proxy buffering so Render (and any reverse proxy) streams events
+    # incrementally over HTTPS instead of buffering the whole response — the
+    # most common SSE-over-HTTPS deploy breakage. sse-starlette already pings
+    # to keep the connection alive.
+    return EventSourceResponse(
+        event_gen(),
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/nl-search")
