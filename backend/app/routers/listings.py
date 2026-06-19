@@ -10,8 +10,9 @@ Design notes
   language, min_score (rating), and topic (full-text search in `text`).
   Aspects JSONB is returned as-is.
 * POST /api/batch/compare: fetches all listings in a single IN-query (no N+1),
-  returns the comparison matrix.  The AI verdict is deferred to the agent phase
-  and returns null for now.
+  returns the comparison matrix plus an AI verdict built from PARALLEL per-listing
+  review synthesis (asyncio.gather) + one grounded LLM call, cached by listing set
+  and degrading to a matrix-only (null verdict) response on LLM failure.
 * Redis caching: detail pages are cached with a longer TTL (settings default
   3600s); review pages use 120s.  Both fall back gracefully on Redis failure.
 """

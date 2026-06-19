@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { getWishlist, toggleWishlist, getCompare, toggleCompare, clearCompare } from "@/lib/wishlist";
 import { ListingCard } from "@/lib/api";
 import { ConciergePanel } from "@/components/concierge/ConciergePanel";
@@ -36,6 +36,59 @@ const CompareContext = createContext<CompareCtx>({
 });
 
 // ---- Hover sync (card <-> map marker) ----
+// Split into two contexts so that components which only *write* hover state
+// (e.g. map markers) don't re-render when the hovered id changes.
+// The setter context value is permanently stable (a ref's .current never
+// triggers re-renders), so it is safe to split out.
+//
+// For *reading* hover state we expose useIsHovered(id) backed by
+// useSyncExternalStore so each card only re-renders when its own highlighted
+// state flips — not when any other card's hover state changes.  This
+// eliminates the render storm (all 20 cards re-rendering on every mouse
+// move) that was starving the main thread and delaying click / navigation
+// events during image loading.
+type HoverListener = () => void;
+
+interface HoverStore {
+  getSnapshot: () => string | null;
+  subscribe: (cb: HoverListener) => () => void;
+  set: (id: string | null) => void;
+}
+
+function createHoverStore(): HoverStore {
+  let current: string | null = null;
+  const listeners = new Set<HoverListener>();
+  return {
+    getSnapshot: () => current,
+    subscribe: (cb) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    set: (id) => {
+      if (id === current) return;
+      current = id;
+      listeners.forEach((cb) => cb());
+    },
+  };
+}
+
+// Setter context carries only the stable `set` function — never changes.
+const HoverSetContext = createContext<(id: string | null) => void>(() => {});
+// Store context carries the store object itself (also stable after mount).
+const HoverStoreContext = createContext<HoverStore | null>(null);
+
+/** Returns whether `id` is currently hovered. Only re-renders when the
+ *  highlighted state for THIS id changes, not on every hover event. */
+export function useIsHovered(id: string): boolean {
+  const store = useContext(HoverStoreContext);
+  return useSyncExternalStore(
+    store ? store.subscribe : (_cb) => () => {},
+    store ? () => store.getSnapshot() === id : () => false,
+    () => false,
+  );
+}
+
+/** Legacy shape kept for MapView and any other consumers that read hoveredId. */
 interface HoverCtx {
   hoveredId: string | null;
   setHoveredId: (id: string | null) => void;
@@ -49,7 +102,21 @@ export function Providers({ children }: { children: React.ReactNode }) {
   const [wishlist, setWishlist] = useState<string[]>([]);
   const [compare, setCompare] = useState<string[]>([]);
   const [compareCards, setCompareCards] = useState<ListingCard[]>([]);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
+
+  // Hover store: ref-stable object so HoverStoreContext/HoverSetContext never
+  // force a re-render of the provider itself.
+  const hoverStoreRef = useRef<HoverStore>(createHoverStore());
+  const hoverStore = hoverStoreRef.current;
+
+  // Legacy hoveredId state kept only for MapView's useHover() which reads it.
+  // We sync it from the store so MapView still works without changes.
+  const [hoveredId, setHoveredIdState] = useState<string | null>(null);
+
+  // Wrap the store's setter to also update the legacy state for MapView.
+  const setHoveredId = useCallback((id: string | null) => {
+    hoverStore.set(id);
+    setHoveredIdState(id);
+  }, [hoverStore]);
 
   useEffect(() => {
     setWishlist(getWishlist());
@@ -99,11 +166,18 @@ export function Providers({ children }: { children: React.ReactNode }) {
           has: (id) => compare.includes(id),
         }}
       >
-        <HoverContext.Provider value={{ hoveredId, setHoveredId }}>
-          {children}
-          {/* Concierge is mounted globally so it's reachable from any page. */}
-          <ConciergePanel />
-        </HoverContext.Provider>
+        {/* HoverStoreContext: stable store object, never changes */}
+        <HoverStoreContext.Provider value={hoverStore}>
+          {/* HoverSetContext: stable setter, never changes */}
+          <HoverSetContext.Provider value={hoverStore.set}>
+            {/* Legacy HoverContext: only MapView reads hoveredId from here */}
+            <HoverContext.Provider value={{ hoveredId, setHoveredId }}>
+              {children}
+              {/* Concierge is mounted globally so it's reachable from any page. */}
+              <ConciergePanel />
+            </HoverContext.Provider>
+          </HoverSetContext.Provider>
+        </HoverStoreContext.Provider>
       </CompareContext.Provider>
     </WishlistContext.Provider>
   );

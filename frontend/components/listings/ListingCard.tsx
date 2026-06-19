@@ -2,11 +2,12 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { memo, useCallback } from "react";
 import { ListingCard as ListingCardType } from "@/lib/api";
 import { StarRating } from "@/components/ui/StarRating";
 import { AMENITY_LABELS } from "@/lib/search-state";
 import { price } from "@/lib/currency";
-import { useWishlist, useCompare, useHover } from "@/app/providers";
+import { useWishlist, useCompare, useHover, useIsHovered } from "@/app/providers";
 
 interface ListingCardProps {
   listing: ListingCardType;
@@ -20,16 +21,29 @@ const TYPE_LABELS: Record<string, string> = {
   "shared room": "Shared room",
 };
 
-export function ListingCard({ listing, searchParams }: ListingCardProps) {
+// Memoised so that HoverContext updates (setHoveredId on any card) only
+// re-render the two cards whose highlight state actually changes — not all
+// 20 cards simultaneously, which was creating a render storm that starved
+// the browser's main thread and delayed click/navigation events.
+export const ListingCard = memo(function ListingCard({ listing, searchParams }: ListingCardProps) {
   const { has: inWishlist, toggle: toggleWL } = useWishlist();
   const { has: inCompare, toggle: toggleCmp } = useCompare();
-  const { hoveredId, setHoveredId } = useHover();
+  // useIsHovered only re-renders this card when ITS OWN highlight state flips.
+  // Previously we read hoveredId from HoverContext and computed `=== listing.id`
+  // here, which caused all 20 cards to re-render on every mouse-enter/leave.
+  const isHighlighted = useIsHovered(listing.id);
+  // setHoveredId comes from the stable HoverSetContext via useHover — only used
+  // for writing, so consuming useHover() here is fine (MapView reads hoveredId
+  // from the same context but cards now only need the setter).
+  const { setHoveredId } = useHover();
 
   const saved = inWishlist(listing.id);
   const comparing = inCompare(listing.id);
-  const isHighlighted = hoveredId === listing.id;
 
   const href = `/listings/${listing.id}${searchParams ? `?${searchParams}` : ""}`;
+
+  const handleMouseEnter = useCallback(() => setHoveredId(listing.id), [listing.id, setHoveredId]);
+  const handleMouseLeave = useCallback(() => setHoveredId(null), [setHoveredId]);
 
   return (
     <article
@@ -38,8 +52,8 @@ export function ListingCard({ listing, searchParams }: ListingCardProps) {
           ? "border-gray-900 shadow-lg ring-2 ring-gray-900 ring-offset-0"
           : "border-gray-100 hover:border-gray-200 hover:shadow-md"
       }`}
-      onMouseEnter={() => setHoveredId(listing.id)}
-      onMouseLeave={() => setHoveredId(null)}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
       {/* Photo */}
       <Link href={href} className="block relative aspect-[4/3] bg-gray-100 overflow-hidden">
@@ -51,6 +65,8 @@ export function ListingCard({ listing, searchParams }: ListingCardProps) {
             className="object-cover transition-transform duration-300 group-hover:scale-105"
             sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
             loading="lazy"
+            decoding="async"
+            fetchPriority="low"
           />
         ) : (
           <div className="w-full h-full bg-gray-200 flex items-center justify-center text-gray-400 text-4xl">
@@ -157,7 +173,7 @@ export function ListingCard({ listing, searchParams }: ListingCardProps) {
       </div>
     </article>
   );
-}
+});
 
 // Skeleton version
 export function ListingCardSkeleton() {

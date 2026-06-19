@@ -88,6 +88,10 @@ input[type="range"]::-webkit-slider-thumb {
   cursor: pointer;
   border: 2px solid white;
   box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  /* Re-enable pointer events on the thumb only — the <input> itself carries
+     pointer-events:none so the invisible track doesn't steal drag events from
+     the sibling slider. The thumb must opt back in so it stays draggable. */
+  pointer-events: all;
 }
 input[type="range"]::-moz-range-thumb {
   width: 18px;
@@ -97,6 +101,7 @@ input[type="range"]::-moz-range-thumb {
   cursor: pointer;
   border: 2px solid white;
   box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  pointer-events: all;
 }
 
 /* Skeleton shimmer */

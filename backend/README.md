@@ -2,7 +2,7 @@
 
 API service exposing **both** the traditional search/filter endpoints **and** the streaming multi-agent concierge.
 
-> **Status:** implemented & verified (Phases 2 + 3). All endpoints below are live; the 4-agent concierge streams over SSE. Only the batch-compare **AI verdict** is deferred (the comparison matrix itself works).
+> **Status:** implemented & verified (Phases 2 + 3). All endpoints below are live; the 4-agent concierge streams over SSE. The batch-compare **AI verdict** (parallel per-listing review synthesis + a grounded LLM verdict) is implemented; it degrades to a matrix-only response if the LLM call fails.
 
 ## Layout
 
@@ -81,5 +81,5 @@ Qdrant holds **`listings`** (50K) + **`summaries`** (50K per-property review sum
 - **Beds-as-capacity** — no `max_guests` column; guest filtering uses `beds`.
 - **Availability filter is post-DB-pagination** — search `total` reflects pre-availability counts (fine at current scale).
 - **`app/availability.py` mirrors `ingestion/availability.py`** — same hash/params; keep them in sync.
-- **batch-compare AI verdict deferred** — the matrix (price/amenities/rating/calendar) is implemented; only the LLM verdict string is pending.
+- **batch-compare AI verdict** — the matrix (price/amenities/rating/calendar) and the LLM verdict (parallel per-listing review synthesis + one grounded verdict, cached by listing set) are both implemented; the verdict degrades to null (matrix-only) on LLM failure.
 - Qdrant `.search` emits a deprecation warning under client 1.12 (functional; `query_points` migration deferred).

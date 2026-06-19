@@ -39,7 +39,7 @@ lib/
 - ✅ **Filters:** date range (availability-aware), guests, price slider, rating, property type, amenities, sort — with removable active-filter chips (incl. a **city** chip).
 - ✅ **Results:** listing cards (photo, price/night, total-for-stay, rating, amenities, distance) + **MapLibre** map with price markers, clustering, and **map↔list hover/pan sync**. The map **fits its bounds to the result pins** (not a static centroid), clusters re-compute on zoom, and clicking a pin opens a popup / a cluster zooms in to split.
 - ✅ **Detail page:** gallery, amenities grid, embedded map, reviews (filter by language/score/topic + aspect scores + AI summary), availability calendar, price breakdown, mocked Reserve → confirmation.
-- ✅ **Wishlist** + **compare (2–4)** (AI verdict slot present; the backend verdict itself is deferred to the agent phase).
+- ✅ **Wishlist** + **compare (2–4)** with an AI verdict (the backend builds it from parallel per-listing review synthesis + a grounded LLM call; the matrix still renders if the verdict is unavailable).
 - ✅ **NL search bar** (Phase 5) — calls `/api/nl-search`, applies the parsed filters, and shows "understood" chips so the user sees what was parsed.
 - ✅ **Concierge** (Phase 5) — mounted globally (reachable from any page); streams visible agent steps + a grounded answer; listing citations click through to the detail page.
 
