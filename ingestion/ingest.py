@@ -64,6 +64,7 @@ from dotenv import load_dotenv
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
+    PayloadSchemaType,
     PointStruct,
     QuantizationConfig,
     ScalarQuantization,
@@ -162,6 +163,33 @@ async def ensure_collection(
         quantization_config=_int8_quantization(),
     )
     print(f"[qdrant] created collection '{name}' (dim={VECTOR_DIM}, cosine, int8).")
+
+
+# Payload fields the retrieval/itinerary agents filter on (see
+# backend/app/agents/retrieval.py). Qdrant Cloud runs in STRICT mode and 400s on
+# filtering an un-indexed field ("Index required but not found"); local Qdrant
+# allows it via full scan. So these indexes are MANDATORY for cloud and carried
+# inside the snapshot, so a restored cluster works without manual fixup.
+_LISTINGS_PAYLOAD_INDEXES = {
+    "city": PayloadSchemaType.KEYWORD,
+    "type": PayloadSchemaType.KEYWORD,
+    "neighbourhood": PayloadSchemaType.KEYWORD,
+    "amenities": PayloadSchemaType.KEYWORD,
+    "base_price": PayloadSchemaType.FLOAT,
+    "beds": PayloadSchemaType.INTEGER,
+}
+
+
+async def ensure_payload_indexes(client: AsyncQdrantClient, name: str) -> None:
+    """Create the listings payload indexes (idempotent; safe to re-run)."""
+    for field, schema in _LISTINGS_PAYLOAD_INDEXES.items():
+        try:
+            await client.create_payload_index(
+                collection_name=name, field_name=field, field_schema=schema
+            )
+        except Exception as exc:  # noqa: BLE001 — index may already exist
+            print(f"[qdrant] payload index '{field}' skipped: {exc}")
+    print(f"[qdrant] payload indexes ensured on '{name}'.")
 
 
 # ---------------------------------------------------------------------------
@@ -1470,6 +1498,9 @@ async def run(
         # 4. Qdrant collections (Option A: listings + summaries; NO reviews).
         await ensure_collection(qdrant, COLLECTION_LISTINGS,  recreate=recreate_qdrant)
         await ensure_collection(qdrant, COLLECTION_SUMMARIES, recreate=recreate_qdrant)
+        # Payload indexes for the agents' hard-constraint filters — mandatory on
+        # Qdrant Cloud (strict mode) and baked into the snapshot for restores.
+        await ensure_payload_indexes(qdrant, COLLECTION_LISTINGS)
         # Drop any stale reviews collection from earlier runs — reviews now live
         # only in Postgres (full-text), so a leftover vector collection would feed
         # the review agent stale data.

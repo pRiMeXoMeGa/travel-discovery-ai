@@ -42,6 +42,9 @@ for snap in "$DUMPS_DIR"/*.snapshot; do
   echo "    '$c' uploaded."
 done
 
+# Payload indexes required by Qdrant Cloud strict mode (mandatory for filtering).
+bash "$(dirname "$0")/ensure_qdrant_indexes.sh"
+
 echo ""
 echo "==> Verifying counts…"
 echo -n "    Postgres listings: "
