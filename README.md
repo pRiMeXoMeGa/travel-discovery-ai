@@ -11,7 +11,9 @@ AI-native travel discovery & booking — a Booking.com/Airbnb-style product surf
 | 3 — Multi-agent concierge | Intent / Retrieval / Review-intel / Itinerary, SSE streaming | ✅ done & verified |
 | 4 — Frontend booking surface | Filters, cards, map↔list, detail, wishlist, compare | ✅ done & verified |
 | 5 — Frontend AI integration | NL search bar + chips, streaming concierge UI | ✅ done & verified |
-| 6 — Deployment | Public URL (Render + Vercel + Neon + Qdrant Cloud + Upstash) | ⬜ pending |
+| 6 — Deployment | Public URL (Render + Vercel + Neon + Qdrant Cloud + Upstash) | ✅ done & live |
+
+**Live demo:** frontend → https://travel-discovery-ai.vercel.app · backend → https://travel-discovery-api.onrender.com (`/docs`). The backend runs on Render free tier, so the **first request after idle cold-starts in ~40–50s** — give it a moment, or it may already be warm.
 
 > **Data:** real Inside Airbnb (detailed CSVs) — **50,000 listings** (Amsterdam 10,480 + Lisbon 19,760 + Los Angeles 19,760) + **200,000 reviews** (66,667/city) + 50,000 per-property summaries.
 
@@ -90,7 +92,8 @@ The ingestion pipeline (`ingestion/ingest.py`, re-runnable) parses the CSVs, cle
 - Aspect scores / topic filtering are sparse on non-English reviews.
 - Calendar availability is synthetic (deterministic), not the real Inside Airbnb calendar.
 - A global review full-text (GIN) index is ~100–200 MB at 200K reviews — fine locally, watch it on the 0.5 GB free-tier Postgres (per-property lookups don't even need it).
-- Not yet deployed to a public URL (Phase 6); embedding all 200K reviews would need a GPU / faster host or a cloud embedding API.
+- Embedding all 200K reviews would need a GPU / faster host or a cloud embedding API (deferred — see trade-off #1).
+- Backend is on Render's free tier, so it spins down after 15 min idle (~40–50s cold start on the next request); a keep-warm ping mitigates this for demos.
 
 ## One-command local run
 
@@ -146,7 +149,7 @@ No auth/accounts, no real payments/booking (Reserve is mocked), stays-only (no f
 
 ## Time spent
 
-_Actual hours: TODO — fill in before submission._
+**~38 hours** across the six phases — roughly: data layer + re-runnable ingestion ~9h, traditional API ~5h, multi-agent concierge + backend craft ~10h, frontend booking surface ~10h, deployment + docs/eval ~4h.
 
 ## Deployment (Path A — free tier)
 
