@@ -2,7 +2,7 @@
 
 API service exposing **both** the traditional search/filter endpoints **and** the streaming multi-agent concierge.
 
-> **Status:** scaffold. Wiring, config, routing, and clients are in place; endpoint/agent bodies are `NotImplementedError` / `TODO`.
+> **Status:** implemented & verified (Phases 2 + 3). All endpoints below are live; the 4-agent concierge streams over SSE. The batch-compare **AI verdict** (parallel per-listing review synthesis + a grounded LLM verdict) is implemented; it degrades to a matrix-only response if the LLM call fails.
 
 ## Layout
 
@@ -52,9 +52,34 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000   # needs a .env at repo root (see ../.env.example)
 ```
 
+## Agents (`app/agents/`)
+
+| Agent | Role | Grounding |
+|---|---|---|
+| `intent` | NL → `StructuredQuery` via structured-JSON LLM call; resolves vague dates ("late June") to ISO ranges | omits fields it can't determine (no fabrication) |
+| `retrieval` | embeds intent (fastembed) → Qdrant `listings` search **fused with hard-constraint payload filters** (incl. real `room_type` values) → hydrates rows from Postgres | per-result rationale built **deterministically** from real fields — the LLM can't invent attributes |
+| `review_intel` | ranks a property's reviews via **Postgres full-text** (focus-aware `to_tsvector('simple')` + `idx_reviews_fts`), with a balanced top/bottom-rated fallback → LLM synthesis ("praise X, complain about Y") | **mandatory `[r#]` citations** to real review rows; abstains honestly when no reviews |
+| `itinerary` | LLM decides segment structure only; property selection + costing is **deterministic** via the availability function | totals from real prices; budget-checked; ranked swap-out alternatives per stay |
+
+`orchestrator.py` is a custom async generator: routes by intent, runs each agent in a guard that emits `status:"error"` and **degrades to traditional filtered search** rather than crashing the stream, and records per-step token/latency via `observability.py`.
+
+## Vector layout (Option A — real data)
+
+Qdrant holds **`listings`** (50K) + **`summaries`** (50K per-property review summaries) — both 384-dim. **Reviews are NOT vector-embedded**: all 200K live in Postgres with a GIN full-text index (`idx_reviews_fts`). This is a deliberate trade-off (4-core CPU couldn't embed 200K long reviews in reasonable time); review search is served from Postgres full-text. Per-property review retrieval is a fast indexed `listing_id` slice — no latency penalty; the cost is semantic recall, mitigated by the summary vectors + the LLM reading the real review rows. See the root README "Key trade-offs".
+
 ## Notes / decisions
 
-- **fastembed (ONNX), not sentence-transformers/torch** — small enough to fit Render's free 512 MB. Same 384-dim `bge-small-en-v1.5` model used at ingest, so query and corpus vectors share one space.
-- **SSE, not WebSocket** — simpler and works through Render/Vercel over HTTPS; requires a long-lived host (not serverless).
-- **Single uvicorn worker** in the Dockerfile — keeps memory low and avoids duplicate embedding-model loads on free tier.
-- **Async everywhere** — asyncpg pool, async Qdrant/Redis clients; CPU-bound embedding runs via `asyncio.to_thread`.
+- **Review search via Postgres full-text, not vectors** — `review_intel._retrieve_review_snippets` uses `to_tsvector('simple', text) @@ plainto_tsquery(...)` ranked by `ts_rank`, scoped to the property's `listing_id` (multilingual-safe 'simple' config). Falls back to top+bottom-rated reviews when there's no focus/match.
+- **LLM over REST, not the deprecated `google-generativeai` SDK** — `llm.py` calls Gemini `generateContent` / `streamGenerateContent` via httpx, with structured-JSON (`responseMimeType`), retry-on-429/5xx + backoff, and a one-shot JSON repair pass. Provider switch (`gemini` | `anthropic`) behind one module.
+- **Custom orchestrator, not LangGraph/CrewAI** — first-class SSE step streaming + exact token/latency accounting; lighter for 4 cooperating agents.
+- **fastembed (ONNX), not sentence-transformers/torch** — fits Render's free 512 MB. Same 384-dim `bge-small-en-v1.5` at ingest + query, so vectors share one space.
+- **SSE, not WebSocket** — works through Render/Vercel over HTTPS; needs a long-lived host (not serverless).
+- **Async everywhere** — asyncpg pool, async Qdrant/Redis; CPU-bound embedding via `asyncio.to_thread`. Redis caching (search, retrievals, review syntheses) degrades gracefully if Redis is down.
+
+## Trade-offs / simplifications
+
+- **Beds-as-capacity** — no `max_guests` column; guest filtering uses `beds`.
+- **Availability filter is post-DB-pagination** — search `total` reflects pre-availability counts (fine at current scale).
+- **`app/availability.py` mirrors `ingestion/availability.py`** — same hash/params; keep them in sync.
+- **batch-compare AI verdict** — the matrix (price/amenities/rating/calendar) and the LLM verdict (parallel per-listing review synthesis + one grounded verdict, cached by listing set) are both implemented; the verdict degrades to null (matrix-only) on LLM failure.
+- Qdrant `.search` emits a deprecation warning under client 1.12 (functional; `query_points` migration deferred).

@@ -1,10 +1,17 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Load the repo-root .env regardless of the process CWD (uvicorn is commonly
+# launched from backend/). Real environment variables still take precedence,
+# so docker-compose's injected vars override this in containers.
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
     """Central config, loaded from environment (.env). See ../.env.example."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=str(_ENV_FILE), extra="ignore")
 
     # Relational (Postgres / Neon) — asyncpg DSN
     database_url: str = "postgresql://travel:travel@localhost:5432/travel"
