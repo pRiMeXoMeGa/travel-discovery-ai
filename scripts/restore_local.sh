@@ -40,6 +40,9 @@ for snap in "$DUMPS_DIR"/*.snapshot; do
   echo "    '$c' recovered."
 done
 
+# Payload indexes the agents need (snapshots predating this fix may lack them).
+QDRANT_URL="$QDRANT_URL_LOCAL" bash "$(dirname "$0")/ensure_qdrant_indexes.sh"
+
 echo ""
 echo "✓ Local restore complete. Verify:"
 echo "    curl -s $QDRANT_URL_LOCAL/collections | python -m json.tool"
