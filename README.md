@@ -149,7 +149,7 @@ No auth/accounts, no real payments/booking (Reserve is mocked), stays-only (no f
 
 ## Time spent
 
-**~38 hours** across the six phases — roughly: data layer + re-runnable ingestion ~9h, traditional API ~5h, multi-agent concierge + backend craft ~10h, frontend booking surface ~10h, deployment + docs/eval ~4h.
+**~40 hours** across the six phases — roughly: data layer + re-runnable ingestion ~10h, traditional API ~5h, multi-agent concierge + backend craft ~11h, frontend booking surface ~10h, deployment + docs/eval ~4h.
 
 ## Deployment (Path A — free tier)
 
