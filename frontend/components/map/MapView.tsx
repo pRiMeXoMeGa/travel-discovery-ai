@@ -5,6 +5,7 @@
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useRef, useCallback, useState } from "react";
 import { ListingCard, SearchFilters } from "@/lib/api";
+import { price } from "@/lib/currency";
 import { useHover } from "@/app/providers";
 import Link from "next/link";
 import Image from "next/image";
@@ -217,7 +218,7 @@ export function MapView({ listings, filters, onViewportSearch }: MapViewProps) {
     singles.forEach((listing) => {
       const el = document.createElement("div");
       el.className = "price-marker";
-      el.textContent = `$${Math.round(listing.price_per_night)}`;
+      el.textContent = price(listing.price_per_night, listing.city);
       el.title = listing.name;
 
       el.addEventListener("click", (e) => {
@@ -321,7 +322,7 @@ export function MapView({ listings, filters, onViewportSearch }: MapViewProps) {
               </p>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-bold text-gray-900">
-                  ${Math.round(popup.listing.price_per_night)}<span className="font-normal text-xs text-gray-500">/night</span>
+                  {price(popup.listing.price_per_night, popup.listing.city)}<span className="font-normal text-xs text-gray-500">/night</span>
                 </span>
                 {popup.listing.rating != null && (
                   <span className="text-xs text-gray-600">★ {popup.listing.rating.toFixed(1)}</span>

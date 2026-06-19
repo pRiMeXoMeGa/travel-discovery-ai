@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ListingCard as ListingCardType } from "@/lib/api";
 import { StarRating } from "@/components/ui/StarRating";
 import { AMENITY_LABELS } from "@/lib/search-state";
+import { price } from "@/lib/currency";
 import { useWishlist, useCompare, useHover } from "@/app/providers";
 
 interface ListingCardProps {
@@ -129,13 +130,13 @@ export function ListingCard({ listing, searchParams }: ListingCardProps) {
         <div className="flex items-baseline justify-between mt-auto">
           <div>
             <span className="text-base font-bold text-gray-900">
-              ${Math.round(listing.price_per_night)}
+              {price(listing.price_per_night, listing.city)}
             </span>
             <span className="text-xs text-gray-500 ml-1">/ night</span>
           </div>
           {listing.total_for_stay != null && (
             <span className="text-xs text-gray-500">
-              ${Math.round(listing.total_for_stay)} total
+              {price(listing.total_for_stay, listing.city)} total
             </span>
           )}
         </div>

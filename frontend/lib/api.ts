@@ -112,7 +112,7 @@ export interface NlSearchResponse {
 
 export interface CompareResponse {
   listings: ListingDetail[];
-  verdict: null;
+  verdict: string | null;
 }
 
 export async function search(filters: SearchFilters): Promise<SearchResponse> {

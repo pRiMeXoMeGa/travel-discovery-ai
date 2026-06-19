@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useCompare } from "@/app/providers";
+import { price } from "@/lib/currency";
 import Image from "next/image";
 
 export function CompareBar() {
@@ -40,7 +41,7 @@ export function CompareBar() {
                     {card.name}
                   </p>
                   <p className="text-xs text-gray-400">
-                    ${Math.round(card.price_per_night)}/night
+                    {price(card.price_per_night, card.city)}/night
                   </p>
                 </div>
                 <button

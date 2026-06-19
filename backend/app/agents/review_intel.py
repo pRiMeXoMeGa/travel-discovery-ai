@@ -35,13 +35,18 @@ _MAX_SNIPPETS = 8        # bounded evidence set per synthesis (lean LLM input)
 _SNIPPET_CHARS = 280
 
 _SYSTEM = (
-    "You are a review-intelligence analyst. You synthesize guest reviews into a "
-    "short, balanced summary of what guests CONSISTENTLY praise and what they "
+    "You are a review-intelligence analyst. From the provided guest reviews, write "
+    "a short, balanced summary of what guests CONSISTENTLY praise and what they "
     "OCCASIONALLY complain about. Absolute rules:\n"
-    "1. Use ONLY the provided reviews as evidence. Never invent details.\n"
-    "2. Cite the review id (e.g. [r3]) after each claim you make.\n"
-    "3. If the evidence is thin or contradictory, say so honestly.\n"
-    "4. If there are no reviews, state that no review evidence is available and "
+    "1. Use ONLY the provided reviews as evidence — never invent details, names, "
+    "or numbers.\n"
+    "2. Cite the review id (e.g. [r3]) immediately after each claim it supports.\n"
+    "3. Reviews may be in different languages; read them all and write the summary "
+    "in English (you may briefly quote a short translated phrase).\n"
+    "4. Weight by frequency: say 'consistently' only for themes spanning several "
+    "reviews, 'a few guests' for one-offs. If evidence is thin or contradictory, "
+    "say so honestly rather than overstating.\n"
+    "5. If there are no reviews, state that no review evidence is available and "
     "make no claims.\n"
     "Keep it to 3-5 sentences."
 )
@@ -72,60 +77,46 @@ async def _retrieve_review_snippets(
 ) -> list[dict]:
     """Return up to _MAX_SNIPPETS relevant reviews with text, grounded in real rows.
 
-    Strategy: when a `focus` is given, semantic-search Qdrant `reviews` filtered
-    to these listings, then hydrate text from Postgres. Without a focus (or if
-    Qdrant returns nothing), fall back to the highest- and lowest-rated reviews
-    from Postgres so praise AND complaints are represented.
+    Option A: reviews are NOT vector-embedded — they live in Postgres with a
+    full-text index (`idx_reviews_fts`, 'simple' config). So when a `focus` is
+    given we rank this property's reviews by Postgres full-text relevance; without
+    a focus (or no FTS match) we fall back to the highest- AND lowest-rated reviews
+    so praise and complaints are both represented. All grounded in real rows.
     """
-    review_ids: list[str] = []
-
-    if focus:
-        try:
-            from qdrant_client import models as qmodels
-
-            vector = await embed_query(focus)
-            qfilter = qmodels.Filter(
-                must=[
-                    qmodels.FieldCondition(
-                        key="listing_id",
-                        match=qmodels.MatchAny(any=listing_ids),
-                    )
-                ]
-            )
-            hits = await get_qdrant().search(
-                collection_name=settings.qdrant_collection_reviews,
-                query_vector=vector,
-                query_filter=qfilter,
-                limit=_MAX_SNIPPETS,
-                with_payload=True,
-            )
-            review_ids = [h.payload.get("review_id") for h in hits if h.payload]
-        except Exception as exc:  # noqa: BLE001 — degrade to SQL sampling
-            logger.warning("review_intel: Qdrant review search failed: %s", exc)
-
+    n = len(listing_ids)
+    id_ph = ", ".join(f"${i + 1}" for i in range(n))
     pool = await get_pool()
-    if review_ids:
-        placeholders = ", ".join(f"${i + 1}" for i in range(len(review_ids)))
+    rows = []
+
+    if focus and focus.strip():
+        # Full-text rank within these listings' reviews. 'simple' config matches
+        # the GIN index and is language-agnostic (reviews are multilingual).
+        focus_ph = f"${n + 1}"
         sql = (
             "SELECT id, listing_id, rating, text, language, sentiment "
-            f"FROM reviews WHERE id IN ({placeholders})"
+            f"FROM reviews WHERE listing_id IN ({id_ph}) "
+            f"AND to_tsvector('simple', text) @@ plainto_tsquery('simple', {focus_ph}) "
+            f"ORDER BY ts_rank(to_tsvector('simple', text), plainto_tsquery('simple', {focus_ph})) DESC "
+            f"LIMIT {_MAX_SNIPPETS}"
         )
         async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, *review_ids)
-    else:
+            rows = await conn.fetch(sql, *listing_ids, focus)
+
+    if not rows:
         # Balanced sample: top + bottom rated for these listings.
-        placeholders = ", ".join(f"${i + 1}" for i in range(len(listing_ids)))
         half = max(1, _MAX_SNIPPETS // 2)
         sql = (
             "(SELECT id, listing_id, rating, text, language, sentiment FROM reviews "
-            f" WHERE listing_id IN ({placeholders}) ORDER BY rating DESC NULLS LAST "
+            f" WHERE listing_id IN ({id_ph}) ORDER BY rating DESC NULLS LAST "
             f" LIMIT {half}) UNION ALL "
             "(SELECT id, listing_id, rating, text, language, sentiment FROM reviews "
-            f" WHERE listing_id IN ({placeholders}) ORDER BY rating ASC NULLS LAST "
+            f" WHERE listing_id IN ({id_ph}) ORDER BY rating ASC NULLS LAST "
             f" LIMIT {half})"
         )
+        # Both UNION halves reference the same $1..$n placeholders, so the
+        # listing ids are passed ONCE (not twice).
         async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, *listing_ids, *listing_ids)
+            rows = await conn.fetch(sql, *listing_ids)
 
     seen: set[str] = set()
     snippets: list[dict] = []

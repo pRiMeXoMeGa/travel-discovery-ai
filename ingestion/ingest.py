@@ -93,8 +93,9 @@ DATABASE_URL: str = os.environ.get(
 QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY: str | None = os.environ.get("QDRANT_API_KEY") or None
 
-COLLECTION_LISTINGS = os.environ.get("QDRANT_COLLECTION_LISTINGS", "listings")
-COLLECTION_REVIEWS  = os.environ.get("QDRANT_COLLECTION_REVIEWS",  "reviews")
+COLLECTION_LISTINGS  = os.environ.get("QDRANT_COLLECTION_LISTINGS",  "listings")
+COLLECTION_REVIEWS   = os.environ.get("QDRANT_COLLECTION_REVIEWS",   "reviews")
+COLLECTION_SUMMARIES = os.environ.get("QDRANT_COLLECTION_SUMMARIES", "summaries")
 
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 VECTOR_DIM = 384
@@ -175,7 +176,8 @@ def get_embed_model():
     if _embed_model is None:
         from fastembed import TextEmbedding
         print(f"[embed] loading model '{EMBEDDING_MODEL}' (first run downloads ~23 MB)…")
-        _embed_model = TextEmbedding(model_name=EMBEDDING_MODEL)
+        # threads=cpu_count: benchmark showed ~1.6x over the default on this 4-core box.
+        _embed_model = TextEmbedding(model_name=EMBEDDING_MODEL, threads=os.cpu_count())
         print("[embed] model ready.")
     return _embed_model
 
@@ -1134,6 +1136,70 @@ async def stage_embed_listings(
 # Stage: embed reviews → Qdrant
 # ---------------------------------------------------------------------------
 
+async def stage_embed_summaries(
+    pool: asyncpg.Pool,
+    qdrant: AsyncQdrantClient,
+    embed_batch: int = EMBED_BATCH_SIZE,
+    qdrant_batch: int = QDRANT_UPSERT_BATCH,
+) -> int:
+    """Embed per-property review summaries → Qdrant `summaries` (Option A).
+
+    One point per listing (id derived from listing_id, payload {listing_id}).
+    Replaces per-review embedding — the 200K reviews stay in Postgres (full-text).
+    """
+    import uuid as _uuid
+    print("\n[embed-summaries] starting…")
+    t0 = time.time()
+    total = 0
+
+    async with pool.acquire() as conn:
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM listing_summaries WHERE summary IS NOT NULL AND summary <> ''"
+        )
+        print(f"[embed-summaries] {count} summaries to embed.")
+
+        async with conn.transaction():
+            cur = conn.cursor(
+                "SELECT listing_id, summary FROM listing_summaries "
+                "WHERE summary IS NOT NULL AND summary <> ''",
+                prefetch=embed_batch,
+            )
+
+            text_buf: list[str] = []
+            id_buf: list[str] = []
+
+            async def flush():
+                nonlocal total
+                vectors = embed_texts(text_buf)
+                points: list[PointStruct] = []
+                for lid, vec in zip(id_buf, vectors):
+                    point_id = _uuid.UUID(lid).int >> 64
+                    points.append(PointStruct(id=point_id, vector=vec, payload={"listing_id": lid}))
+                for qi in range(0, len(points), qdrant_batch):
+                    await upsert_points_batch(
+                        qdrant, COLLECTION_SUMMARIES, points[qi : qi + qdrant_batch]
+                    )
+                total += len(points)
+                text_buf.clear()
+                id_buf.clear()
+
+            with tqdm(total=count, unit="summary") as pbar:
+                async for row in cur:
+                    text_buf.append((row["summary"] or "")[:512])
+                    id_buf.append(row["listing_id"])
+                    if len(text_buf) >= embed_batch:
+                        await flush()
+                        pbar.update(embed_batch)
+            if text_buf:
+                remaining = len(text_buf)
+                await flush()
+                pbar.update(remaining)
+
+    elapsed = time.time() - t0
+    print(f"[embed-summaries] upserted {total} points in {elapsed:.1f}s.")
+    return total
+
+
 async def stage_embed_reviews(
     pool: asyncpg.Pool,
     qdrant: AsyncQdrantClient,
@@ -1274,10 +1340,10 @@ async def verify_counts(
             "SELECT COUNT(*) FROM listings WHERE neighbourhood_price_pct IS NOT NULL"
         )
 
-    listings_info = await qdrant.get_collection(COLLECTION_LISTINGS)
-    reviews_info  = await qdrant.get_collection(COLLECTION_REVIEWS)
-    n_listings_q  = listings_info.points_count
-    n_reviews_q   = reviews_info.points_count
+    listings_info  = await qdrant.get_collection(COLLECTION_LISTINGS)
+    summaries_info = await qdrant.get_collection(COLLECTION_SUMMARIES)
+    n_listings_q   = listings_info.points_count
+    n_summaries_q  = summaries_info.points_count
 
     rows = [
         ("Postgres listings",               n_listings_pg),
@@ -1285,15 +1351,15 @@ async def verify_counts(
         ("Postgres listing_summaries",      n_summaries),
         ("Listings with price percentile",  n_enriched),
         ("Qdrant listings collection",      n_listings_q),
-        ("Qdrant reviews collection",       n_reviews_q),
+        ("Qdrant summaries collection",     n_summaries_q),
     ]
     width = max(len(r[0]) for r in rows) + 2
     for label, count in rows:
         status = ""
         if label == "Postgres listings" and n_listings_q is not None:
             status = " OK" if count == n_listings_q else f" MISMATCH (qdrant={n_listings_q})"
-        if label == "Postgres reviews" and n_reviews_q is not None:
-            status = " OK" if count == n_reviews_q else f" MISMATCH (qdrant={n_reviews_q})"
+        if label == "Postgres listing_summaries" and n_summaries_q is not None:
+            status = " OK" if count == n_summaries_q else f" (qdrant summaries={n_summaries_q})"
         print(f"  {label:<{width}}: {count}{status}")
 
 
@@ -1385,9 +1451,16 @@ async def run(
                 await conn.execute("TRUNCATE listings CASCADE")
             print("[init] tables cleared.")
 
-        # 4. Qdrant collections.
-        await ensure_collection(qdrant, COLLECTION_LISTINGS, recreate=recreate_qdrant)
-        await ensure_collection(qdrant, COLLECTION_REVIEWS,  recreate=recreate_qdrant)
+        # 4. Qdrant collections (Option A: listings + summaries; NO reviews).
+        await ensure_collection(qdrant, COLLECTION_LISTINGS,  recreate=recreate_qdrant)
+        await ensure_collection(qdrant, COLLECTION_SUMMARIES, recreate=recreate_qdrant)
+        # Drop any stale reviews collection from earlier runs — reviews now live
+        # only in Postgres (full-text), so a leftover vector collection would feed
+        # the review agent stale data.
+        _existing = {c.name for c in (await qdrant.get_collections()).collections}
+        if COLLECTION_REVIEWS in _existing:
+            await qdrant.delete_collection(COLLECTION_REVIEWS)
+            print(f"[qdrant] dropped unused '{COLLECTION_REVIEWS}' collection (Option A).")
 
         # 5. LLM client (optional).
         llm_client = None
@@ -1437,8 +1510,9 @@ async def run(
         # 9. Embed listings → Qdrant.
         n_listing_points = await stage_embed_listings(pool, qdrant)
 
-        # 10. Embed reviews → Qdrant.
-        n_review_points = await stage_embed_reviews(pool, qdrant)
+        # 10. Embed per-property summaries → Qdrant (Option A: reviews stay in
+        #     Postgres full-text; we embed summaries, not individual reviews).
+        n_summary_points = await stage_embed_summaries(pool, qdrant)
 
         # 11. Verification.
         await verify_counts(pool, qdrant)

@@ -6,7 +6,7 @@ How agent output quality is measured. A small set of **golden travel queries** w
 
 - **Golden set:** ~10–15 representative queries spanning the agent surface (NL search parsing, retrieval relevance, review synthesis grounding, itinerary planning), including the two complex brief queries and at least one adversarial/failure case.
 - **Scoring (manual, 1–5):** per query, score on the dimensions below. Record provider/model + token usage + latency alongside each.
-- **Grounding check:** every factual claim in an agent answer must trace to a retrieved listing/review (citation present and correct). Hallucinated claims = automatic fail on grounding.
+- **Grounding check:** every factual claim must trace to a retrieved listing/review (citation present and correct). Hallucinated claims = automatic fail. Review synthesis is grounded in **real Inside Airbnb review rows** retrieved via Postgres full-text (focus-ranked) + balanced top/bottom-rated sampling — `[r#]` citations map to real `reviews.id`.
 
 | Dimension | What it measures |
 |---|---|
@@ -17,17 +17,21 @@ How agent output quality is measured. A small set of **golden travel queries** w
 | Itinerary validity | Respects budget, dates, constraints; totals add up; swaps work |
 | Failure handling | Graceful degradation / honest "I couldn't find…" rather than confident nonsense |
 
-## Golden queries
+## Golden queries (real data: Amsterdam · Lisbon · Los Angeles)
 
-<!-- TODO: fill in during Phase 3. Template below. -->
+Scores are filled in by a manual run against the loaded corpus.
 
 | # | Query | Expected behaviour | Score (1–5) | Notes |
 |---|---|---|---|---|
-| 1 | "a quiet 1-bed in Lisbon under 130 with a balcony for late June" | NL → filters: city=Lisbon, beds=1, price≤130, amenity=balcony, dates=late June; chips updated | — | — |
-| 2 | "Find me a quiet 1-bedroom in Lisbon near good restaurants for 3 nights in late June, under 130 a night, balcony if possible, no party-type buildings, and tell me which one has the most consistent reviews." | Full concierge run; ranked candidates + review-consistency verdict with citations | — | — |
-| 3 | "Plan a 4-night Dubai trip for a couple, one mid-range hotel near the metro and one splurge night with a view. Budget AED 4000 total. Avoid Deira." | Itinerary: 2 stays, day-by-day, total ≤ AED 4000, excludes Deira | — | — |
-| 4 | (adversarial) query with no possible match | Honest "no results / closest alternatives", no hallucination | — | — |
+| 1 | "an entire place in Lisbon under 130 with a balcony for late June" | NL → filters: city=Lisbon, type=`Entire home/apt`, price≤130, amenity=balcony, dates=late June; chips updated (incl. city chip) | — | — |
+| 2 | "Find an entire place in Amsterdam near the centre for 3 nights under 200 a night, and tell me what guests consistently praise and complain about." | Full concierge run; ranked candidates + review synthesis (Postgres full-text) with `[r#]` citations to real reviews | — | — |
+| 3 | "Plan a 4-night Los Angeles trip for a couple — one stay near the beach and one near Downtown. Budget $1200 total." | Itinerary: 2 stays, day-by-day cards, total ≤ $1200, swap-out alternatives | — | — |
+| 4 | "family-friendly place in Amsterdam with a pool and kitchen under 250" | NL → filters: city, amenities=[pool,kitchen], price≤250; real results | — | — |
+| 5 | "places in Lisbon guests say are quiet and clean" | review-theme retrieval via summary vectors + FTS; grounded synthesis | — | — |
+| 6 | (adversarial) "a castle on the moon under $5" | Honest no-match / closest alternatives, no hallucination, no crash | — | — |
 
 ## Results summary
 
-<!-- TODO: aggregate scores, observed failure modes, and what you'd improve. -->
+<!-- Fill in after a manual scoring pass: aggregate scores, observed failure modes
+     (e.g. non-English aspect sparsity, FTS keyword vs semantic recall), and improvements. -->
+*(Pending manual scoring run on the full corpus.)*

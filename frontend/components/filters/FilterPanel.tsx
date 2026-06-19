@@ -8,6 +8,7 @@ import {
   SORT_LABELS,
   CITIES,
 } from "@/lib/search-state";
+import { currencySymbol } from "@/lib/currency";
 
 interface FilterPanelProps {
   filters: SearchFilters;
@@ -104,8 +105,8 @@ export function FilterPanel({ filters, onChange }: FilterPanelProps) {
       <Section title="Price per night">
         <div className="px-1">
           <div className="flex justify-between text-sm font-semibold text-gray-800 mb-3">
-            <span>${priceMin}</span>
-            <span>${priceMax}+</span>
+            <span>{currencySymbol(filters.city)}{priceMin}</span>
+            <span>{currencySymbol(filters.city)}{priceMax}+</span>
           </div>
           <div className="relative h-6 flex items-center mb-1">
             <div

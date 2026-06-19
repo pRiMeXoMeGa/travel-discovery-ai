@@ -15,6 +15,7 @@ Design notes
 * Redis caching: detail pages are cached with a longer TTL (settings default
   3600s); review pages use 120s.  Both fall back gracefully on Redis failure.
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -23,6 +24,8 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException
 
+from .. import llm
+from ..agents import review_intel
 from ..availability import availability_window
 from ..cache import cache_get, cache_set
 from ..db import get_pool
@@ -218,14 +221,76 @@ async def get_reviews(
 
 # ── Batch compare ─────────────────────────────────────────────────────────────
 
+_VERDICT_SYSTEM = (
+    "You are a concise travel comparison analyst. Give a 2-4 sentence verdict "
+    "grounded STRICTLY in the provided facts and review summaries — never invent "
+    "details. Refer to properties by name, keep prices in their stated currency, "
+    "and say which is the best overall value, which has the strongest reviews, and "
+    "which suits which kind of traveler."
+)
+
+
+def _ccy(city: str | None) -> str:
+    """Currency symbol per city (Amsterdam/Lisbon = EUR, Los Angeles = USD)."""
+    return "€" if city in ("Amsterdam", "Lisbon") else "$"
+
+
+async def _compare_verdict(listings: list[ListingDetail]) -> str | None:
+    """AI verdict for the compare page.
+
+    Runs per-listing review synthesis IN PARALLEL (asyncio.gather — this is the
+    brief's "batch endpoint, parallel synthesis"), then a single grounded LLM
+    verdict over the facts + syntheses. Cached by the listing set; degrades to
+    None (matrix-only) on LLM failure.
+    """
+    if len(listings) < 2:
+        return None
+
+    cache_key = "verdict:" + hashlib.sha256(
+        ",".join(sorted(l.id for l in listings)).encode()
+    ).hexdigest()
+    try:
+        cached = await cache_get(cache_key)
+        if cached:
+            return cached.get("verdict")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Parallel grounded review synthesis per listing.
+    syntheses = await asyncio.gather(
+        *[review_intel.synthesize([l.id], focus=None) for l in listings],
+        return_exceptions=True,
+    )
+
+    blocks: list[str] = []
+    for l, syn in zip(listings, syntheses):
+        review_text = syn[0] if isinstance(syn, tuple) else (l.summary or "no review summary")
+        amenities = ", ".join(l.amenities[:8]) if l.amenities else "—"
+        blocks.append(
+            f"- {l.name} ({l.city}{', ' + l.neighbourhood if l.neighbourhood else ''}): "
+            f"{_ccy(l.city)}{round(l.base_price)}/night, rating {l.rating if l.rating is not None else 'n/a'} "
+            f"({l.review_count} reviews), {l.beds} bed(s). Amenities: {amenities}. "
+            f"Reviews: {review_text}"
+        )
+    prompt = "Compare these stays and give your verdict.\n\n" + "\n".join(blocks)
+
+    try:
+        verdict = await llm.complete_text(prompt, _VERDICT_SYSTEM)
+    except llm.LLMError as exc:
+        logger.warning("compare verdict LLM failed: %s", exc)
+        return None
+
+    try:
+        await cache_set(cache_key, {"verdict": verdict})
+    except Exception:  # noqa: BLE001
+        pass
+    return verdict
+
+
 @router.post("/batch/compare", response_model=CompareMatrix)
 async def compare(req: CompareRequest) -> CompareMatrix:
-    """Fetch 2–4 listings in a single query and return a comparison matrix.
-
-    AI verdict is deferred to the agent phase (returns null).  The endpoint
-    is still fully implemented for the data side so the frontend can render
-    the price/amenity/rating comparison table immediately.
-    """
+    """Fetch 2–4 listings in a single query and return a comparison matrix
+    plus an AI verdict built from PARALLEL per-listing review synthesis."""
     ids = req.listing_ids
     if not (2 <= len(ids) <= 4):
         raise HTTPException(status_code=422, detail="Provide between 2 and 4 listing IDs")
@@ -289,4 +354,5 @@ async def compare(req: CompareRequest) -> CompareMatrix:
             )
         )
 
-    return CompareMatrix(listings=listings_out, verdict=None)
+    verdict = await _compare_verdict(listings_out)
+    return CompareMatrix(listings=listings_out, verdict=verdict)

@@ -12,6 +12,7 @@ import {
   recomputePlanTotal,
 } from "@/lib/concierge";
 import { StarRating } from "@/components/ui/StarRating";
+import { price } from "@/lib/currency";
 
 // Friendly labels for the agent step trail. "router" is internal → hidden.
 const STEP_LABEL: Record<string, string> = {
@@ -119,11 +120,11 @@ function StayCard({ stay, swapIdx, onSwap, currencyNote }: StayCardProps) {
 
           <div className="flex items-baseline gap-2 mt-1.5">
             <span className="text-sm font-bold text-gray-900">
-              ${Math.round(listing.price_per_night)}
+              {price(listing.price_per_night, listing.city)}
               <span className="text-xs font-normal text-gray-500">/night</span>
             </span>
             <span className="text-xs text-gray-500">
-              {currencyNote ? `${currencyNote} ` : ""}${Math.round(displayedOption.stay_cost)} total
+              {price(displayedOption.stay_cost, listing.city)} total
             </span>
           </div>
         </div>
@@ -252,14 +253,14 @@ function ItineraryView({ plan, swaps, onSwap }: ItineraryViewProps) {
           <div>
             <p className="text-xs text-gray-500 uppercase tracking-wide">{plan.city} · {plan.total_nights} nights</p>
             <p className="text-base font-bold text-gray-900 mt-0.5">
-              ${Math.round(currentTotal).toLocaleString()}
+              {price(currentTotal, plan.city)}
               {hasSwaps && currentTotal !== plan.total_cost && (
                 <span className="text-xs font-normal text-gray-400 ml-1.5">
-                  (was ${Math.round(plan.total_cost).toLocaleString()})
+                  (was {price(plan.total_cost, plan.city)})
                 </span>
               )}
             </p>
-            {plan.currency_note && (
+            {false && plan.currency_note && (
               <p className="text-[11px] text-gray-400 mt-0.5">{plan.currency_note}</p>
             )}
           </div>

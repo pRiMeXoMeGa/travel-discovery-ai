@@ -7,6 +7,7 @@ import {
   SORT_LABELS,
 } from "@/lib/search-state";
 import { format, parseISO } from "date-fns";
+import { currencySymbol } from "@/lib/currency";
 
 interface FilterChipsProps {
   filters: SearchFilters;
@@ -45,9 +46,10 @@ export function FilterChips({ filters, onRemove, total }: FilterChipsProps) {
   if (filters.price_min != null || filters.price_max != null) {
     const min = filters.price_min ?? 0;
     const max = filters.price_max ?? 800;
+    const cs = currencySymbol(filters.city);
     chips.push({
       id: "price",
-      label: `$${min} – $${max}`,
+      label: `${cs}${min} – ${cs}${max}`,
       onRemove: () => onRemove("price_min"),
     });
   }

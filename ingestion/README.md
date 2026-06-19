@@ -66,10 +66,10 @@ Inside Airbnb detailed CSVs at `csvData/<city>/listings.csv` and `reviews.csv`.
 | `language` | `langdetect(comments[:500])` |
 | `aspects` / `sentiment` | heuristic enrichment |
 
-## Stores (the split)
+## Stores (the split) — Option A vector scope
 
-- **Postgres (relational):** all listings + all reviews (text, rating, language, aspects, sentiment) + precomputed summaries.
-- **Qdrant (vectors):** all listings + all reviews embedded = ~250K points @ **384-dim**, Cosine, int8 quantization.
+- **Postgres (relational):** all 50K listings + all 200K reviews (text, language, aspects, sentiment) + 50K summaries. Reviews carry a **GIN full-text index** (`idx_reviews_fts`, `'simple'` config) for keyword review search.
+- **Qdrant (vectors):** `listings` (50K) + `summaries` (50K) @ **384-dim**, cosine, int8. **Individual reviews are NOT embedded** — embedding 200K long real reviews is ~15 h on a 4-core CPU, so we embed per-property **summaries** instead and serve review search from Postgres full-text. (`stage_embed_summaries` builds the `summaries` collection; a stale `reviews` collection is dropped on `--recreate-qdrant`.) See the root README "Key trade-offs" for the latency/recall analysis.
 
 ## Enrichments
 
@@ -115,7 +115,7 @@ docker exec travel-discovery-ai-postgres-1 sh -c \
 cd ingestion
 python ingest.py --recreate-qdrant
 
-# FULL SCALE — Amsterdam:10,480 + Lisbon:19,760 + LA:19,760 / ~200,001 reviews (~60-120 min)
+# FULL SCALE — Amsterdam:10,480 + Lisbon:19,760 + LA:19,760 / ~200,001 reviews (~5 h on a 4-core CPU)
 python ingest.py --scale full --recreate-qdrant
 
 # Custom scale (evenly split across 3 cities)
@@ -146,41 +146,36 @@ DATABASE_URL=postgresql://travel:travel@postgres:5432/travel    # inside Docker
 QDRANT_URL=http://localhost:6333                                 # host
 QDRANT_URL=http://qdrant:6333                                   # inside Docker
 QDRANT_COLLECTION_LISTINGS=listings
-QDRANT_COLLECTION_REVIEWS=reviews
+QDRANT_COLLECTION_SUMMARIES=summaries          # Option A: summaries embedded, not reviews
 EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
 EMBEDDING_DIM=384
 GEMINI_API_KEY=                   # only needed with --use-llm
 ```
 
-## Verified dry-run
-
-Run the dry-run and paste the output table from `[verify]` here. Target counts:
+## Verified dry-run (Option A, ~2K/10K)
 
 ```
-Postgres listings               : ~2,000  (660 Amsterdam + 670 Lisbon + 670 Los Angeles)
-Postgres reviews                : ~10,000 (3,300 + 3,350 + 3,350)
-Postgres listing_summaries      : ~2,000
-Listings with price percentile  : ~2,000
-Qdrant listings collection      : ~2,000  OK
-Qdrant reviews collection       : ~10,000 OK
+Postgres listings               : 2000   OK
+Postgres reviews                : 10000  (full-text in Postgres, not embedded)
+Postgres listing_summaries      : 2000   OK
+Listings with price percentile  : 2000
+Qdrant listings collection      : 2000
+Qdrant summaries collection     : 2000   (reviews collection: none)
+idx_reviews_fts                 : present
+Total pipeline time             : 7.5 min  (was 63 min before Option A + threads=4)
 ```
 
-Quality spot-checks to verify:
-- `type` IN ('Entire home/apt', 'Private room', 'Shared room', 'Hotel room')
-- `city` IN ('Amsterdam', 'Lisbon', 'Los Angeles') — no Dubai
-- `base_price` > 0 for all rows (including imputed ones)
-- `amenities` is a non-empty JSON array with canonical terms only
-- `photos` length ≥ 4, all muscache.com URLs
-- `review.text` is real guest comment text (not templated)
-- `review.language` populated, includes 'pt' / 'nl' / 'es' examples
-- `review_scores_rating` maps to 0–5 scale correctly
+Quality spot-checks (verified):
+- `type` IN ('Entire home/apt','Private room','Shared room','Hotel room'); `city` IN ('Amsterdam','Lisbon','Los Angeles') — no Dubai.
+- ≥4 real `muscache.com` photos per listing; `base_price` > 0 (incl. imputed).
+- amenities normalized to canonical terms; real multilingual review text with `language` set (en/fr/de/es/pt/nl…); `review_scores_rating` on 0–5.
 
 ## Scale / timing notes
 
-- **fastembed/ONNX** (`bge-small-en-v1.5`, ~23 MB) — no torch, no GPU required.
-- Embedding throughput: ~30 texts/sec on a laptop CPU.
-- Dev scale (~12K texts): ~7 min total.
-- Full scale (~250K texts): estimate **60–120 min** CPU-only.
+- **fastembed/ONNX** (`bge-small-en-v1.5`, ~23 MB) — no torch, no GPU required; `threads=cpu_count` (~1.6× over default on a 4-core box).
+- Embedding throughput on this 4-core CPU: ~5–10 short texts/sec (this is *why* reviews aren't embedded — see Stores).
+- Dev scale (Option A, ~2K/10K → 4K vectors): ~7.5 min total.
+- Full scale (Option A: 50K listings + 50K summaries = ~100K vectors): embed ~3–4 h + load/enrich ~2 h ≈ **~5 h** CPU-only.
 - Pipeline is safe to re-run: `TRUNCATE listings CASCADE` before each run (real-csv mode always wipes), then upserts guard against partial re-inserts.
 - Deterministic: same seed + same CSV content → identical IDs, same sampling selection.
 - Run once at full scale, then export a **Postgres dump + Qdrant snapshot** so `docker compose up` restores in seconds (Phase 2).

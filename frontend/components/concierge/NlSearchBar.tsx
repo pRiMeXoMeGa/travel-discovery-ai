@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { nlSearch, SearchFilters } from "@/lib/api";
+import { currencySymbol } from "@/lib/currency";
 
 interface Props {
   onApply: (filters: Partial<SearchFilters>) => void;
@@ -14,8 +15,9 @@ function summarize(u: Record<string, unknown>): string[] {
   if (u.vibe) tags.push(String(u.vibe));
   if (u.check_in && u.check_out) tags.push(`${u.check_in} → ${u.check_out}`);
   if (u.party_size) tags.push(`${u.party_size} guests`);
-  if (u.budget_per_night) tags.push(`≤ ${u.budget_per_night}/night`);
-  if (u.budget_total) tags.push(`≤ ${u.budget_total} total`);
+  const cs = currencySymbol(u.city as string | undefined);
+  if (u.budget_per_night) tags.push(`≤ ${cs}${u.budget_per_night}/night`);
+  if (u.budget_total) tags.push(`≤ ${cs}${u.budget_total} total`);
   for (const c of (u.hard_constraints as string[]) ?? []) tags.push(c);
   for (const c of (u.soft_preferences as string[]) ?? []) tags.push(c);
   return tags;

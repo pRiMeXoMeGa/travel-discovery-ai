@@ -28,10 +28,16 @@ lib/
 └── wishlist.ts         # localStorage wishlist + compare
 ```
 
+## Cities & types (real Inside Airbnb data)
+
+- **Cities:** Amsterdam, Lisbon, Los Angeles (the city selector + map centroids).
+- **Property types** use the real Airbnb `room_type` strings verbatim: `Entire home/apt`, `Private room`, `Shared room`, `Hotel room` (the filter options + `lib/search-state.ts` `PROPERTY_TYPE_LABELS` must match what `listings.type` stores).
+- Amenities filter uses the 18-term canonical vocabulary the ingestion normalizes to.
+
 ## Booking surface (implemented)
 
-- ✅ **Filters:** date range (availability-aware), guests, price slider, rating, property type, amenities, sort — with removable active-filter chips.
-- ✅ **Results:** listing cards (photo, price/night, total-for-stay, rating, amenities, distance) + **MapLibre** map with price markers, clustering, and **map↔list hover/pan sync**.
+- ✅ **Filters:** date range (availability-aware), guests, price slider, rating, property type, amenities, sort — with removable active-filter chips (incl. a **city** chip).
+- ✅ **Results:** listing cards (photo, price/night, total-for-stay, rating, amenities, distance) + **MapLibre** map with price markers, clustering, and **map↔list hover/pan sync**. The map **fits its bounds to the result pins** (not a static centroid), clusters re-compute on zoom, and clicking a pin opens a popup / a cluster zooms in to split.
 - ✅ **Detail page:** gallery, amenities grid, embedded map, reviews (filter by language/score/topic + aspect scores + AI summary), availability calendar, price breakdown, mocked Reserve → confirmation.
 - ✅ **Wishlist** + **compare (2–4)** (AI verdict slot present; the backend verdict itself is deferred to the agent phase).
 - ✅ **NL search bar** (Phase 5) — calls `/api/nl-search`, applies the parsed filters, and shows "understood" chips so the user sees what was parsed.
@@ -63,5 +69,6 @@ Scripts: `dev`, `build`, `start`, `lint`.
 
 ## Notes
 
-- **SSE over POST** (`lib/concierge.ts`) uses `fetch` + `ReadableStream`, not `EventSource`, because the concierge endpoint is a POST. Parses `data:` frames and yields typed `ConciergeEvent`s.
+- **SSE over POST** (`lib/concierge.ts`) uses `fetch` + `ReadableStream`, not `EventSource`, because the concierge endpoint is a POST. Parses `data:` frames (normalizing `\r\n` → `\n` — uvicorn sends CRLF separators) and yields typed `ConciergeEvent`s, including the structured `itinerary` event rendered as day-by-day cards with one-click swap-out.
+- **MapLibre CSS** (`import "maplibre-gl/dist/maplibre-gl.css"`) is required for markers to position — without it pins collapse invisibly. Pin clicks `stopPropagation()` so the map's click handler doesn't immediately close the popup.
 - The included `Dockerfile` is **dev-oriented** (`next dev`) for the local stack. Vercel deploys from git directly; for a production container, switch to a multi-stage `next build` + `next start`.

@@ -6,6 +6,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { compareListing, ListingDetail } from "@/lib/api";
 import { AMENITY_LABELS } from "@/lib/search-state";
+import { price } from "@/lib/currency";
 import { StarRating } from "@/components/ui/StarRating";
 import { useWishlist } from "@/app/providers";
 
@@ -36,7 +37,7 @@ function ComparePageInner() {
 
   const ids = (params.get("ids") ?? "").split(",").filter(Boolean);
 
-  const [data, setData] = useState<{ listings: ListingDetail[] } | null>(null);
+  const [data, setData] = useState<{ listings: ListingDetail[]; verdict: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,6 +59,7 @@ function ComparePageInner() {
   }, [ids.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const listings = data?.listings ?? [];
+  const verdict = data?.verdict ?? null;
 
   // Find best values for highlighting
   const bestPrice = listings.length
@@ -175,7 +177,7 @@ function ComparePageInner() {
                     {listings.map((l) => (
                       <CompareCell
                         key={l.id}
-                        value={`$${Math.round(l.base_price)}`}
+                        value={price(l.base_price, l.city)}
                         highlight={l.base_price === bestPrice}
                       />
                     ))}
@@ -271,24 +273,21 @@ function ComparePageInner() {
                     </tr>
                   ))}
 
-                  {/* AI Verdict placeholder */}
+                  {/* AI Verdict — a single grounded comparison across all listings */}
                   <tr>
-                    <td className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider bg-gray-50">
+                    <td className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider bg-gray-50 align-top">
                       AI Verdict
                     </td>
-                    {listings.map((l) => (
-                      <td
-                        key={l.id}
-                        className="px-4 py-3 text-center border-b border-gray-50"
-                      >
-                        <div className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#fff0f3] text-[#e61e4d] text-xs rounded-lg">
-                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                          Coming in Phase 5
-                        </div>
-                      </td>
-                    ))}
+                    <td colSpan={listings.length} className="px-4 py-3 border-b border-gray-50">
+                      <div className="flex gap-2 text-sm bg-[#fff0f3] rounded-lg px-3 py-2.5">
+                        <svg className="w-4 h-4 text-[#e61e4d] flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M13 3l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                        </svg>
+                        <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">
+                          {verdict ?? "AI verdict is unavailable right now — the comparison table above is fully populated."}
+                        </p>
+                      </div>
+                    </td>
                   </tr>
                 </tbody>
               </table>

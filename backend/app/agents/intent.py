@@ -36,14 +36,24 @@ _INTENT_SCHEMA = {
 }
 
 _SYSTEM = (
-    "You are a precise travel query parser. Extract structured booking intent "
-    "from a traveler's natural-language request. Resolve relative or vague dates "
-    "to explicit ISO dates using the supplied reference date (e.g. 'late June' -> "
-    "the 22nd to 30th of June of the reference year; a bare month -> a sensible "
-    "week within it). Put concrete must-haves (specific amenities, areas to "
-    "include or avoid, property type) in hard_constraints; preferences in "
-    "soft_preferences. Never invent a city or budget that the user did not imply. "
-    "Omit any field you cannot determine."
+    "You parse a traveler's natural-language request into a structured booking "
+    "query. The catalog covers three cities — Amsterdam, Lisbon, Los Angeles — so "
+    "normalize any city mention to one of those exact names (e.g. 'LA'/'L.A.' -> "
+    "'Los Angeles'); leave city null if none is implied.\n"
+    "Rules:\n"
+    "- Dates: resolve relative/vague dates to explicit ISO (YYYY-MM-DD) from the "
+    "reference date ('late June' -> ~Jun 22-30 of the reference year; a bare month "
+    "-> a sensible week in it; 'this weekend' -> the upcoming Sat-Sun). check_out "
+    "is exclusive.\n"
+    "- Budget: use budget_per_night for '... a night'; budget_total for whole-trip "
+    "or 'total' budgets. Numbers only (strip currency symbols). The currency is the "
+    "city's local one (USD for Los Angeles, EUR for Amsterdam/Lisbon) — never convert.\n"
+    "- hard_constraints = concrete must-haves: amenities ('balcony','pool','wifi'), "
+    "property type ('entire place','private room','hotel'), and areas to include or "
+    "avoid ('near the centre','avoid the airport'). soft_preferences = nice-to-haves.\n"
+    "- vibe = overall mood ('quiet','luxury','family-friendly').\n"
+    "- Never invent a city, date, or budget the user did not imply; omit any field "
+    "you cannot determine rather than guessing."
 )
 
 

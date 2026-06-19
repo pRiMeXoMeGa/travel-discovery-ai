@@ -41,7 +41,10 @@ CREATE TABLE IF NOT EXISTS reviews (
 CREATE INDEX IF NOT EXISTS idx_reviews_listing   ON reviews (listing_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_language  ON reviews (language);
 CREATE INDEX IF NOT EXISTS idx_reviews_rating    ON reviews (rating);
--- Watch index size on the free 0.5GB tier; add full-text/topic index only if it fits.
+-- Full-text search on review text (Option A: reviews stay in Postgres, not Qdrant).
+-- 'simple' config = no language-specific stemming, since reviews are multilingual.
+CREATE INDEX IF NOT EXISTS idx_reviews_fts ON reviews USING GIN (to_tsvector('simple', text));
+-- Watch index size on the free 0.5GB tier (~100-200MB at 200K reviews).
 
 -- Enrichment: precomputed per-property review summary (brief §2.1 / §2.2).
 CREATE TABLE IF NOT EXISTS listing_summaries (

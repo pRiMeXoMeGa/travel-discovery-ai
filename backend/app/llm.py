@@ -93,9 +93,10 @@ async def complete_json_with_usage(
     schema_hint = json.dumps(schema, indent=2)
     full_prompt = (
         f"{prompt}\n\n"
-        "Respond with a SINGLE JSON object only — no markdown, no prose, no "
-        "code fences. It MUST conform to this JSON schema (omit fields you "
-        "cannot determine rather than inventing values):\n"
+        "Respond with a SINGLE valid JSON object only — no markdown, code fences, "
+        "comments, or surrounding prose. Conform to this schema; use null for "
+        "unknown scalar fields and [] for unknown arrays rather than inventing "
+        "values:\n"
         f"{schema_hint}"
     )
 

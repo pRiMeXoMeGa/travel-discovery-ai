@@ -50,6 +50,9 @@ temp.txt
 REAL_DATA_MIGRATION.md
 csvData/
 
+# Transient run logs
+*.log
+
 # Local Docker Compose overrides (e.g. port remapping for dev machines with
 # a native Postgres on 5432 — see docker-compose.override.yml for the pattern)
 docker-compose.override.yml

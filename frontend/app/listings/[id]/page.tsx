@@ -12,6 +12,7 @@ import {
   ReviewsResponse,
   AvailabilityDay,
 } from "@/lib/api";
+import { price } from "@/lib/currency";
 import { StarRating } from "@/components/ui/StarRating";
 import { AmenityBadge } from "@/components/ui/AmenityBadge";
 import { useWishlist, useCompare } from "@/app/providers";
@@ -117,11 +118,13 @@ function AvailabilityCalendar({
   onSelect,
   checkIn,
   checkOut,
+  city,
 }: {
   window: AvailabilityDay[];
   onSelect: (checkIn: string, checkOut: string) => void;
   checkIn: string | null;
   checkOut: string | null;
+  city?: string;
 }) {
   const [selecting, setSelecting] = useState<string | null>(null);
 
@@ -174,12 +177,12 @@ function AvailabilityCalendar({
               key={day.date}
               className={cls}
               onClick={() => handleClick(day)}
-              title={day.available ? `$${Math.round(day.price)}/night` : "Unavailable"}
+              title={day.available ? `${price(day.price, city)}/night` : "Unavailable"}
             >
               <span>{parseISO(day.date).getDate()}</span>
               {day.available && (
                 <span className="text-[9px] opacity-60 leading-none">
-                  ${Math.round(day.price)}
+                  {price(day.price, city)}
                 </span>
               )}
             </div>
@@ -442,24 +445,24 @@ function BookingWidget({
       {nights > 0 && (
         <div className="border-t border-gray-100 pt-3 mb-4 space-y-2">
           <div className="flex justify-between text-sm">
-            <span className="text-gray-600">${Math.round(nightly)} × {nights} night{nights !== 1 ? "s" : ""}</span>
-            <span className="font-medium">${Math.round(subtotal)}</span>
+            <span className="text-gray-600">{price(nightly, listing.city)} × {nights} night{nights !== 1 ? "s" : ""}</span>
+            <span className="font-medium">{price(subtotal, listing.city)}</span>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">Cleaning fee</span>
-            <span className="font-medium">${cleaningFee}</span>
+            <span className="font-medium">{price(cleaningFee, listing.city)}</span>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">Service fee</span>
-            <span className="font-medium">${serviceFee}</span>
+            <span className="font-medium">{price(serviceFee, listing.city)}</span>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">Taxes</span>
-            <span className="font-medium">${taxes}</span>
+            <span className="font-medium">{price(taxes, listing.city)}</span>
           </div>
           <div className="flex justify-between text-sm font-bold text-gray-900 border-t border-gray-100 pt-2">
             <span>Total</span>
-            <span>${total}</span>
+            <span>{price(total, listing.city)}</span>
           </div>
         </div>
       )}
@@ -469,7 +472,7 @@ function BookingWidget({
         disabled={nights === 0}
         className="w-full py-3 bg-[#e61e4d] text-white font-semibold rounded-xl hover:bg-[#c41840] transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-sm"
       >
-        {nights > 0 ? `Reserve · $${total}` : "Select dates to reserve"}
+        {nights > 0 ? `Reserve · ${price(total, listing.city)}` : "Select dates to reserve"}
       </button>
 
       <p className="text-xs text-center text-gray-400 mt-2">
@@ -736,6 +739,7 @@ export default function ListingDetailPage() {
                 onSelect={handleCalSelect}
                 checkIn={calCheckIn}
                 checkOut={calCheckOut}
+                city={listing.city}
               />
             </div>
 
