@@ -2,7 +2,7 @@
 
 **Last run: 2026-06-19 | Provider: Gemini 2.0 Flash-Lite | Deployment: https://travel-discovery-api.onrender.com (live)**
 
-How agent output quality is measured. A small set of **golden travel queries** with manual scoring. Define these in Phase 3 and use them to test agents as you build (not retrofitted at the end).
+How agent output quality is measured. A small set of **golden travel queries** with manual scoring.
 
 ## Method
 
