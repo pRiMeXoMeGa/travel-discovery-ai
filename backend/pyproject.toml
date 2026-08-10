@@ -1,0 +1,51 @@
+# WS7 (CI): ruff + pytest configuration only.
+#
+# Deliberately no [build-system] / [project] table — this does NOT turn
+# `backend/` into an installable package. `app` stays importable the way
+# it already is today (a plain directory with __init__.py files); pytest
+# finds it via `pythonpath = ["."]` below, which puts this file's
+# directory (backend/) on sys.path so `import app...` resolves regardless
+# of the invoking shell's cwd.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "venv"]
+
+[tool.ruff.lint]
+# Deliberately narrow. This is NOT ruff's built-in default rule set (this
+# ruff version's true default, checked empirically with `--isolated`, is
+# far broader — DTZ/B/S/SIM/PIE/BLE/PERF/UP/ISC and more — and fails on
+# ~30 pre-existing findings scattered across files this workstream does
+# not own). Selecting only Pyflakes (F) + the "import/statement/syntax"
+# pycodestyle subsets (E4/E7/E9) is the same floor ruff itself used to
+# ship as its out-of-the-box default, and it's the largest rule set that
+# currently PASSES on this codebase without editing files outside WS7's
+# scope (backend/.github/ci.yml, requirements-dev.txt, pyproject.toml,
+# tests/conftest.py, tests/test_availability.py).
+#
+# Notably excluded:
+#   E501 (line-too-long)  — ~46 pre-existing hits across routers/schemas.
+#   I    (isort)          — reordering imports in agents/orchestrator.py,
+#                            agents/retrieval.py, agents/review_intel.py
+#                            would mean editing files owned by the two
+#                            agents working in parallel on this branch.
+# Narrowing the rule set beats mass-reformatting code this workstream
+# doesn't own; CI's job here is to catch NEW breakage going forward.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-existing findings in files outside WS7's scope — narrowly ignored
+# (not fixed) so CI is green without touching files owned elsewhere.
+# `l`/`json`/`time`/`timedelta`: backend/app/routers/listings.py, untouched.
+"app/routers/listings.py" = ["F401", "E741"]
+# `import hashlib, json` on one line inside _cache_key(): retrieval.py,
+# untouched (not one of WS7's files).
+"app/agents/retrieval.py" = ["E401"]
+
+[tool.pytest.ini_options]
+# Puts backend/ (this file's directory) on sys.path so `import app...`
+# resolves no matter which directory pytest is invoked from.
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"

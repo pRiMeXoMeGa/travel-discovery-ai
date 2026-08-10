@@ -134,11 +134,14 @@ async def run_concierge(req: ConciergeRequest) -> AsyncIterator[dict]:
     answer_step = AgentStep("answer", "start")
     t_ans = time.perf_counter()
     streamed = False
+    chunk_count = 0
+    usage_stream: llm.TextStream | None = None
     try:
         prompt, system = _answer_prompt(req.query, route, answer_context)
-        async for tok in llm.stream_text(prompt, system):
+        usage_stream = llm.stream_text_with_usage(prompt, system)
+        async for tok in usage_stream:
             streamed = True
-            answer_step.output_tokens += 1  # coarse token proxy for streaming
+            chunk_count += 1
             yield {"type": "token", "text": tok}
         answer_step.status = "done"
         # Explicit done so the UI can stop the "Writing answer" spinner.
@@ -149,6 +152,21 @@ async def run_concierge(req: ConciergeRequest) -> AsyncIterator[dict]:
             # Degrade: emit the deterministic context as the answer.
             yield {"type": "token", "text": _degraded_answer(route, answer_context)}
         yield {"type": "step", "agent": "answer", "status": "error", "data": {"message": str(exc)}}
+
+    # Prefer real provider-reported usage (Gemini usageMetadata / Anthropic
+    # message_start+message_delta usage) over the coarse per-chunk proxy;
+    # fall back to the proxy — rather than reporting zero — whenever usage
+    # was unavailable (older frame shape, provider without it, or the stream
+    # failed before any usage frame arrived), and mark which one this is so
+    # a benchmark can tell measured from estimated.
+    if usage_stream is not None and usage_stream.measured:
+        answer_step.input_tokens = usage_stream.usage.input_tokens
+        answer_step.output_tokens = usage_stream.usage.output_tokens
+        answer_step.data = {"usage_source": "measured"}
+    else:
+        answer_step.output_tokens = chunk_count
+        answer_step.data = {"usage_source": "estimated"}
+
     answer_step.latency_ms = (time.perf_counter() - t_ans) * 1000
     trace.add(answer_step)
 

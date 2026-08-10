@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same branch/PR to save build minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"  # matches backend/Dockerfile's python:3.11-slim
+
+jobs:
+  lint:
+    name: ruff lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      # Only requirements-dev.txt — NOT requirements.txt. The heavy/optional
+      # deps (fastembed/onnxruntime, qdrant-client, redis, asyncpg) never
+      # need to be installed for lint or test; tests/conftest.py stubs them
+      # via sys.modules so `app.*` imports cleanly without them. See that
+      # file's module docstring for the full stub contract.
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff check
+        run: python -m ruff check .
+
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Zero network / zero LLM quota: tests/conftest.py forces dummy
+      # GEMINI_API_KEY / ANTHROPIC_API_KEY before app.config loads and
+      # installs an autouse fixture that hard-fails any real
+      # httpx.AsyncClient/Client network call. No secrets are needed or
+      # read here — deliberately not wiring GEMINI_API_KEY/ANTHROPIC_API_KEY
+      # from GitHub Actions secrets into this job.
+      - name: Run pytest
+        run: python -m pytest tests/ -v
+
+  docker-build:
+    name: docker build (backend)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Plain `docker build`, not a registry push action — this job only
+      # needs to prove the image still builds (dependency install, layer
+      # caching, image size), never publishes it. ubuntu-latest ships
+      # Docker preinstalled, so no extra setup action is needed.
+      - name: Build backend image
+        run: docker build --file backend/Dockerfile --tag travel-discovery-backend:ci backend
