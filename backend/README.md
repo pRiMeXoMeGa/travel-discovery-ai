@@ -1,8 +1,8 @@
-# Backend — FastAPI
+# Backend (FastAPI)
 
-API service exposing **both** the traditional search/filter endpoints **and** the streaming multi-agent concierge.
+This is the API service. It exposes both the traditional search/filter endpoints and the streaming multi-agent concierge.
 
-> **Status:** implemented & verified (Phases 2 + 3). All endpoints below are live; the 4-agent concierge streams over SSE. The batch-compare **AI verdict** (parallel per-listing review synthesis + a grounded LLM verdict) is implemented; it degrades to a matrix-only response if the LLM call fails.
+Status: implemented and verified (Phases 2 and 3). Every endpoint below is live, and the 4-agent concierge streams over SSE. The batch-compare AI verdict (parallel per-listing review synthesis plus a grounded LLM verdict) is in too; if the LLM call fails it just falls back to a matrix-only response.
 
 ## Layout
 
@@ -37,15 +37,15 @@ app/
 | `POST` | `/api/search` | Filtered/sorted search with calendar availability |
 | `GET`  | `/api/listings/{id}` | Property detail (gallery, amenities, aspect scores, summary, price breakdown) |
 | `GET`  | `/api/listings/{id}/reviews` | Reviews filtered by language / score / topic |
-| `POST` | `/api/batch/compare` | Compare 2–4 listings (parallel review synthesis for the AI verdict) |
-| `POST` | `/api/concierge/stream` | Multi-agent concierge over **SSE**; streams intermediate steps + answer tokens |
-| `POST` | `/api/nl-search` | Parse NL → structured filters for the search bar / chips |
+| `POST` | `/api/batch/compare` | Compare 2-4 listings (parallel review synthesis for the AI verdict) |
+| `POST` | `/api/concierge/stream` | Multi-agent concierge over SSE; streams intermediate steps + answer tokens |
+| `POST` | `/api/nl-search` | Parse NL into structured filters for the search bar / chips |
 
-Interactive docs at `/docs` when running.
+Interactive docs at `/docs` when it's running.
 
 ## Run
 
-Normally started by the root `docker compose up --build`. Standalone:
+Normally the root `docker compose up --build` starts it. Standalone:
 
 ```bash
 pip install -r requirements.txt
@@ -56,30 +56,30 @@ uvicorn app.main:app --reload --port 8000   # needs a .env at repo root (see ../
 
 | Agent | Role | Grounding |
 |---|---|---|
-| `intent` | NL → `StructuredQuery` via structured-JSON LLM call; resolves vague dates ("late June") to ISO ranges | omits fields it can't determine (no fabrication) |
-| `retrieval` | embeds intent (fastembed) → Qdrant `listings` search **fused with hard-constraint payload filters** (incl. real `room_type` values) → hydrates rows from Postgres | per-result rationale built **deterministically** from real fields — the LLM can't invent attributes |
-| `review_intel` | ranks a property's reviews via **Postgres full-text** (focus-aware `to_tsvector('simple')` + `idx_reviews_fts`), with a balanced top/bottom-rated fallback → LLM synthesis ("praise X, complain about Y") | **mandatory `[r#]` citations** to real review rows; abstains honestly when no reviews |
-| `itinerary` | LLM decides segment structure only; property selection + costing is **deterministic** via the availability function | totals from real prices; budget-checked; ranked swap-out alternatives per stay |
+| `intent` | Turns NL into a `StructuredQuery` via a structured-JSON LLM call; resolves vague dates like "late June" to ISO ranges | Leaves out fields it can't determine, so it doesn't fabricate |
+| `retrieval` | Embeds the intent (fastembed), runs a Qdrant `listings` search fused with hard-constraint payload filters (including the real `room_type` values), then hydrates the rows from Postgres | The per-result rationale is built deterministically from real fields, so the LLM can't invent attributes |
+| `review_intel` | Ranks a property's reviews with Postgres full-text (focus-aware `to_tsvector('simple')` + `idx_reviews_fts`), with a balanced top/bottom-rated fallback, then has the LLM synthesize ("praise X, complain about Y") | Citations to real review rows (`[r#]`) are mandatory, and it abstains honestly when there are no reviews |
+| `itinerary` | The LLM only decides the segment structure; the property selection and costing are deterministic, driven by the availability function | Totals come from real prices, the budget is checked, and each stay has ranked swap-out alternatives |
 
-`orchestrator.py` is a custom async generator: routes by intent, runs each agent in a guard that emits `status:"error"` and **degrades to traditional filtered search** rather than crashing the stream, and records per-step token/latency via `observability.py`.
+`orchestrator.py` is a custom async generator. It routes by intent, wraps each agent in a guard that emits `status:"error"` and falls back to traditional filtered search instead of crashing the stream, and records per-step token/latency through `observability.py`.
 
-## Vector layout (Option A — real data)
+## Vector layout (Option A, real data)
 
-Qdrant holds **`listings`** (50K) + **`summaries`** (50K per-property review summaries) — both 384-dim. **Reviews are NOT vector-embedded**: all 200K live in Postgres with a GIN full-text index (`idx_reviews_fts`). This is a deliberate trade-off (4-core CPU couldn't embed 200K long reviews in reasonable time); review search is served from Postgres full-text. Per-property review retrieval is a fast indexed `listing_id` slice — no latency penalty; the cost is semantic recall, mitigated by the summary vectors + the LLM reading the real review rows. See the root README "Key trade-offs".
+Qdrant holds `listings` (50K) and `summaries` (50K per-property review summaries), both at 384-dim. Reviews are not vector-embedded: all 200K live in Postgres behind a GIN full-text index (`idx_reviews_fts`). This was a deliberate call (the 4-core CPU couldn't embed 200K long reviews in any reasonable time), so review search comes from Postgres full-text. Per-property review retrieval is a fast indexed `listing_id` slice, so there's no latency cost; what you give up is semantic recall, which the summary vectors and the LLM reading the real rows make up for. There's more on this in the root README's "Key trade-offs".
 
-## Notes / decisions
+## Notes and decisions
 
-- **Review search via Postgres full-text, not vectors** — `review_intel._retrieve_review_snippets` uses `to_tsvector('simple', text) @@ plainto_tsquery(...)` ranked by `ts_rank`, scoped to the property's `listing_id` (multilingual-safe 'simple' config). Falls back to top+bottom-rated reviews when there's no focus/match.
-- **LLM over REST, not the deprecated `google-generativeai` SDK** — `llm.py` calls Gemini `generateContent` / `streamGenerateContent` via httpx, with structured-JSON (`responseMimeType`), retry-on-429/5xx + backoff, and a one-shot JSON repair pass. Provider switch (`gemini` | `anthropic`) behind one module.
-- **Custom orchestrator, not LangGraph/CrewAI** — first-class SSE step streaming + exact token/latency accounting; lighter for 4 cooperating agents.
-- **fastembed (ONNX), not sentence-transformers/torch** — fits Render's free 512 MB. Same 384-dim `bge-small-en-v1.5` at ingest + query, so vectors share one space.
-- **SSE, not WebSocket** — works through Render/Vercel over HTTPS; needs a long-lived host (not serverless).
-- **Async everywhere** — asyncpg pool, async Qdrant/Redis; CPU-bound embedding via `asyncio.to_thread`. Redis caching (search, retrievals, review syntheses) degrades gracefully if Redis is down.
+- Review search runs on Postgres full-text, not vectors. `review_intel._retrieve_review_snippets` uses `to_tsvector('simple', text) @@ plainto_tsquery(...)` ranked by `ts_rank`, scoped to the property's `listing_id` (the 'simple' config is multilingual-safe). When there's no focus or no match, it falls back to the top and bottom-rated reviews.
+- I call the LLM over REST rather than the deprecated `google-generativeai` SDK. `llm.py` hits Gemini's `generateContent` / `streamGenerateContent` via httpx, with structured JSON (`responseMimeType`), retry-on-429/5xx with backoff, and a one-shot JSON repair pass. Switching provider (`gemini` or `anthropic`) lives behind that one module.
+- Custom orchestrator instead of LangGraph/CrewAI. I wanted first-class SSE step streaming and exact token/latency accounting, and for 4 cooperating agents that's lighter to hand-roll.
+- fastembed (ONNX) instead of sentence-transformers/torch, so it fits Render's free 512 MB. Same 384-dim `bge-small-en-v1.5` at ingest and query time, so the vectors share one space.
+- SSE instead of WebSocket. It works through Render/Vercel over HTTPS and just needs a long-lived host (not serverless).
+- Async throughout: asyncpg pool, async Qdrant and Redis, and the CPU-bound embedding goes through `asyncio.to_thread`. Redis caching (search, retrievals, review syntheses) degrades gracefully if Redis is down.
 
-## Trade-offs / simplifications
+## Trade-offs and simplifications
 
-- **Beds-as-capacity** — no `max_guests` column; guest filtering uses `beds`.
-- **Availability filter is post-DB-pagination** — search `total` reflects pre-availability counts (fine at current scale).
-- **`app/availability.py` mirrors `ingestion/availability.py`** — same hash/params; keep them in sync.
-- **batch-compare AI verdict** — the matrix (price/amenities/rating/calendar) and the LLM verdict (parallel per-listing review synthesis + one grounded verdict, cached by listing set) are both implemented; the verdict degrades to null (matrix-only) on LLM failure.
-- Qdrant `.search` emits a deprecation warning under client 1.12 (functional; `query_points` migration deferred).
+- Beds as capacity. There's no `max_guests` column, so guest filtering uses `beds`.
+- The availability filter runs after DB pagination, so the search `total` reflects the pre-availability count. Fine at this scale.
+- `app/availability.py` mirrors `ingestion/availability.py` (same hash, same params), so keep the two in sync.
+- Batch-compare AI verdict: both the matrix (price/amenities/rating/calendar) and the LLM verdict (parallel per-listing review synthesis plus one grounded verdict, cached by the listing set) are implemented. The verdict drops to null (matrix only) if the LLM call fails.
+- Qdrant's `.search` throws a deprecation warning under client 1.12. It still works; the `query_points` migration is deferred.

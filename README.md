@@ -1,31 +1,33 @@
 # Travel Discovery AI
 
-AI-native travel discovery & booking — a Booking.com/Airbnb-style product surface with a multi-agent concierge brain underneath. Real booking UX (filters, map, listing pages, calendars, reviews) augmented by natural-language search, semantic retrieval, grounded review synthesis, and multi-stop itinerary planning, over **real Inside Airbnb data** for **Amsterdam, Lisbon, and Los Angeles**.
+A Booking.com / Airbnb style stays product with a multi-agent concierge underneath. You get the normal booking experience you'd expect (filters, a map, listing pages, calendars, reviews), plus natural-language search, semantic retrieval, grounded review summaries, and multi-stop trip planning. It all runs on real Inside Airbnb data for Amsterdam, Lisbon, and Los Angeles.
 
-## Project status
+## Status
+
+Everything below is built and deployed.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 — Data layer | Real Inside Airbnb ingestion (3 cities), enrichments, embeddings | ✅ done |
-| 2 — Traditional API | Search/filter/sort, availability, detail, reviews, compare | ✅ done & verified |
-| 3 — Multi-agent concierge | Intent / Retrieval / Review-intel / Itinerary, SSE streaming | ✅ done & verified |
-| 4 — Frontend booking surface | Filters, cards, map↔list, detail, wishlist, compare | ✅ done & verified |
-| 5 — Frontend AI integration | NL search bar + chips, streaming concierge UI | ✅ done & verified |
-| 6 — Deployment | Public URL (Render + Vercel + Neon + Qdrant Cloud + Upstash) | ✅ done & live |
+| 1. Data layer | Real Inside Airbnb ingestion (3 cities), enrichments, embeddings | Done |
+| 2. Traditional API | Search/filter/sort, availability, detail, reviews, compare | Done & verified |
+| 3. Multi-agent concierge | Intent / Retrieval / Review-intel / Itinerary, SSE streaming | Done & verified |
+| 4. Frontend booking surface | Filters, cards, map+list, detail, wishlist, compare | Done & verified |
+| 5. Frontend AI integration | NL search bar + chips, streaming concierge UI | Done & verified |
+| 6. Deployment | Public URL (Render + Vercel + Neon + Qdrant Cloud + Upstash) | Done & live |
 
-**Live demo:** frontend → https://travel-discovery-ai.vercel.app · backend → https://travel-discovery-api.onrender.com (`/docs`). The backend runs on Render free tier, so the **first request after idle cold-starts in ~40–50s** — give it a moment, or it may already be warm.
+**Live demo:** frontend at https://travel-discovery-ai.vercel.app, backend at https://travel-discovery-api.onrender.com (API docs at `/docs`). Heads up: the backend is on Render's free tier, so the very first request after it's been idle takes ~40-50s to wake up. After that it's quick. It may already be warm when you try it.
 
-> **Data:** real Inside Airbnb (detailed CSVs) — **50,000 listings** (Amsterdam 10,480 + Lisbon 19,760 + Los Angeles 19,760) + **200,000 reviews** (66,667/city) + 50,000 per-property summaries.
+The data is real Inside Airbnb (the detailed CSV exports): 50,000 listings (10,480 in Amsterdam, 19,760 in Lisbon, 19,760 in Los Angeles) and 200,000 reviews, roughly 66,667 per city, plus a precomputed summary for each of the 50,000 properties.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    U[User browser] -->|HTTPS| FE["Frontend — Next.js / Vercel"]
+    U[User browser] -->|HTTPS| FE["Frontend - Next.js / Vercel"]
     FE -->|REST| API
     FE -->|SSE| STREAM
 
-    subgraph BE["Backend — FastAPI (async, long-lived)"]
+    subgraph BE["Backend - FastAPI (async, long-lived)"]
         API["Traditional API<br/>/api/search · /api/listings · /api/batch/compare"]
         STREAM["Agent API<br/>/api/concierge/stream (SSE) · /api/nl-search"]
         ORCH["Orchestrator (async generator, streams steps)"]
@@ -46,72 +48,73 @@ flowchart TD
     ORCH -->|REST| LLM["Gemini 3.1 Flash-Lite"]
     BE -.->|local query embed| EMB["fastembed bge-small (ONNX)"]
 
-    ING["Ingestion — real Inside Airbnb CSVs<br/>parse → clean → enrich → embed → index"] --> PG
+    ING["Ingestion - real Inside Airbnb CSVs<br/>parse, clean, enrich, embed, index"] --> PG
     ING --> QD
 ```
 
-Two design choices worth calling out up front (both forced by a 4-core dev machine + free-tier limits, both detailed in [Trade-offs](#key-trade-offs)):
-- **Reviews are not vector-embedded.** All 200K live in Postgres with a full-text index; the Review-intelligence agent ranks a property's reviews by Postgres full-text (focus-aware) and the LLM synthesizes/cites the real rows. We embed **listings + per-property summaries** into Qdrant instead.
-- **Availability is computed, not stored** — a deterministic `hash(listing_id, date)` gives per-night availability + price from the listing's real base price, avoiding ~18M calendar rows.
+Two upfront calls shaped most of this, and both came out of running it on a 4-core laptop against free-tier limits (more detail in [Trade-offs](#key-trade-offs)):
 
-## Stack & the "why"
+- I don't vector-embed the reviews. All 200K of them live in Postgres behind a full-text index. The review agent ranks a property's reviews with Postgres full-text search, and the LLM summarizes and cites the actual rows. What I do put in Qdrant is the listings plus a per-property review summary.
+- Availability isn't stored either. A deterministic `hash(listing_id, date)` gives me the per-night availability and price off the listing's real base price, which saves about 18M calendar rows.
+
+## Stack, and why I picked each piece
 
 | Layer | Choice | Why |
 |---|---|---|
-| Frontend | Next.js on **Vercel** | Free CDN + HTTPS; serverless is fine for the SPA |
-| Backend | FastAPI on **Render** (Docker, long-lived) | SSE streaming needs a long-lived process — serverless timeouts would cut agent streams |
-| Relational | **Postgres** (Neon free) | all listings + all review text (+ GIN full-text index) + summaries |
-| Vector | **Qdrant** (Cloud free 1 GB) | `listings` + `summaries` @ 384-dim, cosine, int8. Relational/vector **split** is the brief's "justify the store split" |
-| Cache | **Redis** (Upstash free) | retrievals + review syntheses cluster heavily |
-| LLM | **Gemini 3.1 Flash-Lite** via REST; Claude Haiku fallback | cheap, fast, structured-JSON + SSE; over REST (the `google-generativeai` SDK is deprecated) |
-| Embeddings | **bge-small-en-v1.5** (384-dim) via fastembed/ONNX, local (`threads=cpu_count`) | $0, no torch, fits Render free 512 MB; same model for corpus + query so vectors share one space |
-| Agent framework | **custom async-generator orchestrator** | first-class SSE step streaming + exact per-step token/latency accounting, lighter than LangGraph/CrewAI for 4 cooperating agents |
+| Frontend | Next.js on Vercel | Free CDN and HTTPS, and serverless is fine for an SPA |
+| Backend | FastAPI on Render (Docker, long-lived) | SSE streaming needs a long-lived process; serverless timeouts would cut the agent streams off |
+| Relational | Postgres (Neon free) | All listings, all review text with a GIN full-text index, and the summaries |
+| Vector | Qdrant (Cloud free 1 GB) | `listings` + `summaries` at 384-dim, cosine, int8. Keeping relational and vector separate is the "justify the store split" the brief asks for |
+| Cache | Redis (Upstash free) | Travel queries repeat a lot, so caching retrievals and syntheses pays off |
+| LLM | Gemini 3.1 Flash-Lite over REST, with a Claude Haiku fallback | Cheap, fast, does structured JSON and SSE. I call it over REST because the `google-generativeai` SDK is deprecated |
+| Embeddings | bge-small-en-v1.5 (384-dim), fastembed/ONNX, local | Costs nothing, no torch, fits Render's free 512 MB. Same model at ingest and query time so the vectors share one space |
+| Agent framework | A custom async-generator orchestrator | I wanted first-class SSE step streaming and exact per-step token/latency numbers. For 4 cooperating agents that's lighter than pulling in LangGraph or CrewAI |
 
-## Data choice
+## Why this data
 
-**Real Inside Airbnb data** (the *detailed* `listings.csv` / `reviews.csv` exports) for **Amsterdam, Lisbon, Los Angeles**. Each listing carries real `name`, `room_type`, `neighbourhood`, lat/lng, `price`, `amenities`, `picture_url`, `beds`/`accommodates`, and `review_scores_rating`; each review carries the real `comments` text.
+I went with real Inside Airbnb data (the *detailed* `listings.csv` / `reviews.csv` exports) for Amsterdam, Lisbon, and Los Angeles. Every listing has a real `name`, `room_type`, `neighbourhood`, lat/lng, `price`, `amenities`, `picture_url`, `beds`/`accommodates`, and `review_scores_rating`, and every review has its real `comments` text.
 
-The ingestion pipeline (`ingestion/ingest.py`, re-runnable) parses the CSVs, cleans prices (`$1,234.00` → float, median-imputed if missing), normalizes the free-form `amenities` JSON to an 18-term canonical vocabulary, detects each review's language (`langdetect`), builds ≥4-photo galleries from real `picture_url`s, runs ingest-time enrichments (aspect sentiment, per-property summary, neighbourhood price percentile, amenity normalization), and indexes into Postgres + Qdrant.
+The ingestion pipeline (`ingestion/ingest.py`, and it's re-runnable) parses the CSVs, cleans the prices (`$1,234.00` becomes a float, median-imputed when missing), normalizes the free-form `amenities` JSON down to an 18-term vocabulary, detects each review's language with `langdetect`, builds galleries of at least 4 photos from the real `picture_url`s, runs the ingest-time enrichments (aspect sentiment, per-property summary, neighbourhood price percentile, amenity normalization), and indexes everything into Postgres and Qdrant.
 
-*Why real data:* credibility and genuine review text for the AI layer. *Why these three cities:* together they comfortably exceed the brief's 50K-listing floor while staying within free-tier storage; Amsterdam (10,480) anchors a smaller market, Lisbon and Los Angeles the larger ones.
+I picked real data because it's more credible and gives the AI layer genuine review text to work with. These three cities together clear the brief's 50K-listing floor while still fitting the free tiers. Amsterdam (10,480) is the smaller market and Lisbon and LA are the larger ones.
 
 ## Key trade-offs
 
-1. **Reviews are kept in Postgres (full-text), not vector-embedded.** On a 4-core dev CPU, embedding 200K real (long) review texts is ~15 h. So we embed **listings + per-property summaries** (~100K short vectors, ~5 h) and serve review search from Postgres full-text. *Effect:* per-property review retrieval is **fast** (indexed `listing_id` slice) — no latency penalty; the trade-off is **semantic recall** (keyword/stemming vs. embedding similarity), mitigated by the **summary vectors** (property-level semantic), the LLM reading the real review rows for synthesis, and synonym-expandable `tsquery`. The brief's review intelligence is property/candidate-scoped, where this is a non-issue.
-2. **Listing split is 10,480 / 19,760 / 19,760 (= 50K), not equal.** Amsterdam only has 10,480 listings, so a true 3-way equal split can't reach 50K; we take all of Amsterdam and split the remainder across Lisbon/LA. Reviews *are* equal (66,667/city).
-3. **Aspect sentiment is heuristic (English-mostly).** Real reviews are multilingual; the offline keyword heuristic mainly scores English. The LLM path (`--use-llm`) is built + throttled/retried but free-tier quota + volume make it impractical at 200K; documented rather than half-run.
-4. **Per-review rating isn't in the source** (Inside Airbnb reviews have no per-review stars) → stored null; listing-level `review_scores_rating` drives the rating filter/sort. **Language** is detected at ingest (`langdetect`).
-5. **Deterministic calendar.** The 426 MB+ `calendar.csv` files (Lisbon's has no per-night price) are not loaded; availability + per-night price are computed deterministically from the listing's real base price. Trade-off: availability is synthetic, not the real Airbnb calendar.
-6. **Photos: ≥4 per listing** = the real hero `picture_url` + extras drawn deterministically from a same-city pool of real `picture_url`s (the detailed CSV has only one image per listing). All real Airbnb-CDN images; galleries reuse images across listings (normal for stock-style booking imagery).
-7. **384-dim embeddings** (not 1536) — keeps the corpus inside Qdrant's free 1 GB; small quality trade-off for big footprint/cost savings.
-8. **Availability filter applies post-DB-pagination**, so search `total` reflects pre-availability counts (acceptable at this scale).
+1. Reviews stay in Postgres full-text instead of being vector-embedded. Embedding 200K real (and often long) review texts on a 4-core CPU is roughly 15 hours, so I embed the listings plus per-property summaries instead (about 100K short vectors, ~5 hours) and serve review search from Postgres full-text. Per-property review retrieval stays fast because it's an indexed `listing_id` slice, so there's no latency hit. The cost is semantic recall (keyword/stemming vs embedding similarity), which I soften with the summary vectors, the LLM reading the real rows during synthesis, and synonym-expandable `tsquery`. The brief's review intelligence is scoped to a property or candidate set, where this basically doesn't bite.
+2. The listing split is 10,480 / 19,760 / 19,760 (= 50K), not even. Amsterdam only has 10,480 listings, so an even 3-way split can't reach 50K. I take all of Amsterdam and split the rest across Lisbon and LA. Reviews are even at 66,667/city.
+3. Aspect sentiment is a heuristic and mostly English. Real reviews are multilingual, but the offline keyword heuristic mainly scores English. There's an LLM path (`--use-llm`) that's built, throttled, and retried, but free-tier quota plus the volume make it impractical at 200K, so I documented it rather than half-running it.
+4. The source has no per-review rating (Inside Airbnb reviews don't carry per-review stars), so I store null and let the listing-level `review_scores_rating` drive the rating filter and sort. Language is detected at ingest with `langdetect`.
+5. The calendar is deterministic. The `calendar.csv` files are 426 MB+ (and Lisbon's has no per-night price), so I don't load them. Availability and per-night price are computed from the listing's real base price instead. The trade-off is that availability is synthetic, not the real Airbnb calendar.
+6. Each listing gets at least 4 photos: the real hero `picture_url` plus extras pulled deterministically from a same-city pool of real `picture_url`s (the detailed CSV only ships one image per listing). They're all real Airbnb-CDN images, and galleries reuse images across listings, which is normal for stock-style booking imagery.
+7. Embeddings are 384-dim, not 1536. That keeps the whole corpus inside Qdrant's free 1 GB. Small quality trade-off for a big footprint and cost saving.
+8. The availability filter runs after DB pagination, so the search `total` reflects the pre-availability count. Fine at this scale.
 
 ## Known limitations
 
-- No per-review semantic vector search (see trade-off #1); cross-property "find any review that says X" is keyword-based.
-- Aspect scores / topic filtering are sparse on non-English reviews.
+- No per-review semantic vector search (see trade-off #1), so a cross-property "find any review that mentions X" is keyword-based.
+- Aspect scores and topic filtering are sparse on non-English reviews.
 - Calendar availability is synthetic (deterministic), not the real Inside Airbnb calendar.
-- A global review full-text (GIN) index is ~100–200 MB at 200K reviews — fine locally, watch it on the 0.5 GB free-tier Postgres (per-property lookups don't even need it).
-- Embedding all 200K reviews would need a GPU / faster host or a cloud embedding API (deferred — see trade-off #1).
-- Backend is on Render's free tier, so it spins down after 15 min idle (~40–50s cold start on the next request); a keep-warm ping mitigates this for demos.
+- A global review full-text (GIN) index is ~100-200 MB at 200K reviews. That's fine locally, but worth watching on the 0.5 GB free Postgres. Per-property lookups don't even need it.
+- Embedding all 200K reviews would need a GPU, a faster host, or a cloud embedding API (deferred, see trade-off #1).
+- The backend is on Render's free tier, so it spins down after 15 minutes idle (~40-50s cold start on the next request). The keep-warm ping handles this for demos.
 
 ## One-command local run
 
 ```bash
 cp .env.example .env          # set GEMINI_API_KEY (or LLM_PROVIDER=anthropic + ANTHROPIC_API_KEY)
 docker compose up -d --build  # postgres + qdrant + redis + backend + frontend
-# Load data — either:
+# Load data, either:
 #  (a) restore the pre-built Postgres dump + Qdrant snapshot (fast):
 gh release download deploy-data-v1 -D dumps   # fetch artifacts from the GitHub Release
 bash scripts/restore_local.sh                 # pg_restore + Qdrant snapshot recover
-#  (b) OR re-ingest from the Inside Airbnb detailed CSVs in csvData/{amsterdam,lisbon,los angeles}/:
+#  (b) or re-ingest from the Inside Airbnb detailed CSVs in csvData/{amsterdam,lisbon,los angeles}/:
 docker compose run --rm ingestion python ingest.py --scale full --recreate-qdrant
 ```
 
-Produce/refresh the artifacts yourself with `bash scripts/export_data.sh` (writes `dumps/`), then `bash scripts/publish_artifacts.sh` to push them to the Release.
+If you want to rebuild the artifacts yourself, run `bash scripts/export_data.sh` (it writes `dumps/`) and then `bash scripts/publish_artifacts.sh` to push them to the Release.
 
-- Frontend: http://localhost:3000 · Backend + docs: http://localhost:8000/docs
-- The raw CSVs (~1.5 GB) are **not** committed (gitignored). For a clean reproduction, download them from [Inside Airbnb](https://insideairbnb.com/get-the-data/) into `csvData/`, or restore the dump+snapshot. See [ingestion/README.md](./ingestion/README.md).
+- Frontend: http://localhost:3000, backend + docs: http://localhost:8000/docs
+- The raw CSVs (~1.5 GB) aren't committed (they're gitignored). For a clean reproduction, grab them from [Inside Airbnb](https://insideairbnb.com/get-the-data/) into `csvData/`, or just restore the dump and snapshot. See [ingestion/README.md](./ingestion/README.md).
 
 ## Repo layout
 
@@ -120,63 +123,63 @@ Produce/refresh the artifacts yourself with `bash scripts/export_data.sh` (write
 | `backend/` | FastAPI: traditional search/filter API + streaming multi-agent concierge | [backend/README.md](./backend/README.md) |
 | `frontend/` | Next.js booking-style product surface + conversational concierge | [frontend/README.md](./frontend/README.md) |
 | `ingestion/` | Re-runnable real-CSV ingestion pipeline | [ingestion/README.md](./ingestion/README.md) |
-| `docker-compose.yml` | Full local stack | — |
+| `docker-compose.yml` | Full local stack | - |
 
-## What I'd change with another week
+## What I'd do with another week
 
-- **Embed all 200K reviews** for full per-review semantic search — on a GPU box or via a cloud embedding API (the only real blocker here is the 4-core CPU).
-- **LLM (or fine-tuned) multilingual aspect sentiment** + LLM per-property summaries at a paid tier.
-- Move deployment to a **single always-on VM** (Oracle Always-Free / Hetzner ~€4/mo) running the exact `docker-compose`.
-- **Materialized calendar** (or PostGIS) so availability filtering is pre-pagination; migrate Qdrant `.search` → `query_points`.
+- Embed all 200K reviews for proper per-review semantic search, on a GPU box or via a cloud embedding API. The only real blocker here was the 4-core CPU.
+- Move aspect sentiment and the per-property summaries to an LLM (or a fine-tuned model) on a paid tier so they work across languages.
+- Move the deployment to a single always-on VM (Oracle Always-Free or a ~€4/mo Hetzner box) running the same `docker-compose`.
+- Materialize the calendar (or add PostGIS) so the availability filter runs before pagination, and migrate the Qdrant `.search` calls to `query_points`.
 
-## Rough cost per query (back-of-envelope)
+## Rough cost per query
 
-Measured from a live concierge trace: ~**800 input / ~270 output tokens** per multi-agent query (intent + itinerary/synthesis + answer). At Gemini 3.1 Flash-Lite rates (~$0.10 / $0.40 per 1M in/out, approximate):
+From a live concierge trace, a multi-agent query is around 800 input and 270 output tokens (intent + itinerary/synthesis + the answer). At Gemini 3.1 Flash-Lite rates (roughly $0.10 / $0.40 per 1M in/out):
 
-- **Traditional search/filter:** **$0** (no LLM; query embedding is local).
-- **NL search (intent only):** ~**$0.0001**/query.
-- **Full concierge query:** ~**$0.0003–0.001**/query; Redis caching pushes repeat-query cost toward $0.
+- Traditional search/filter: $0 (no LLM, and the query embedding is local).
+- NL search (intent only): about $0.0001 per query.
+- Full concierge query: about $0.0003 to $0.001 per query, and Redis caching pushes repeat queries toward $0.
 
-Per-query cost is independent of corpus size; the one-time cost is bulk embedding at ingest (~5 h CPU for 100K vectors here; pennies of LLM if enrichments run on the paid tier).
+Per-query cost doesn't depend on corpus size. The one-time cost is the bulk embedding at ingest (~5 hours of CPU for 100K vectors here, or a few pennies of LLM if the enrichments run on a paid tier).
 
 ## Evaluation
 
-See [EVAL.md](./EVAL.md) for the golden-query set, scoring rubric, and grounding/citation checks.
+See [EVAL.md](./EVAL.md) for the golden-query set, the scoring rubric, and the grounding/citation checks.
 
-## Out of scope (per brief)
+## Out of scope (per the brief)
 
-No auth/accounts, no real payments/booking (Reserve is mocked), stays-only (no flights), no HA/multi-region/autoscaling, laptop-responsive only, no branding.
+No auth or accounts, no real payments or booking (Reserve is mocked), stays only (no flights), no HA / multi-region / autoscaling, laptop-responsive only, no branding.
 
 ## Time spent
 
-**~40 hours** across the six phases — roughly: data layer + re-runnable ingestion ~10h, traditional API ~5h, multi-agent concierge + backend craft ~11h, frontend booking surface ~10h, deployment + docs/eval ~4h.
+Roughly 40 hours across the six phases: data layer plus the re-runnable ingestion ~10h, the traditional API ~5h, the multi-agent concierge and backend work ~11h, the frontend booking surface ~10h, and deployment plus docs and eval ~4h.
 
-## Deployment (Path A — free tier)
+## Deployment (Path A, free tier)
 
-Managed PaaS, no VM/SSH/manual TLS. **Order matters — data stores first, backend next, frontend last.** Infra is declared in [`render.yaml`](./render.yaml) (backend Blueprint); Vercel deploys the frontend git-natively.
+Managed PaaS, no VM, SSH, or manual TLS. Order matters: stand up the data stores first, then the backend, then the frontend. The backend infra is declared in [`render.yaml`](./render.yaml) (a Render Blueprint); Vercel deploys the frontend straight from git.
 
-1. **Provision data stores** — create a **Neon** Postgres project, a **Qdrant Cloud** free cluster (1 GB), and an **Upstash** Redis database; copy each connection string + the Qdrant API key.
-2. **Restore data (not re-ingest)** — fetch the pre-built artifacts and restore to the cloud stores:
+1. Provision the data stores. Create a Neon Postgres project, a Qdrant Cloud free cluster (1 GB), and an Upstash Redis database, and copy each connection string plus the Qdrant API key.
+2. Restore the data instead of re-ingesting. Pull the pre-built artifacts and restore them into the cloud stores:
    ```bash
    gh release download deploy-data-v1 -D dumps
    export DATABASE_URL='postgresql://…neon.tech/neondb?sslmode=require'
    export QDRANT_URL='https://…cloud.qdrant.io:6333'  QDRANT_API_KEY='…'
    bash scripts/restore_remote.sh        # restores Neon + Qdrant Cloud, prints counts
    ```
-3. **Backend (Render)** — New → **Blueprint** → connect the repo (reads `render.yaml`, builds `backend/Dockerfile`). Fill the `sync: false` env vars in the dashboard (see table below) — **never bake keys into the image**. Add a [cron-job.org](https://cron-job.org) ping to `/health` every ~10 min to defeat the 15-min free-tier spin-down.
-4. **Frontend (Vercel)** — import the repo, set **Root Directory = `frontend/`**, and `NEXT_PUBLIC_API_URL` = the Render URL.
-5. **Wire + verify** — set `CORS_ORIGINS` on Render to the `https://<app>.vercel.app` origin; confirm SSE streams over HTTPS end-to-end (no mixed-content, no proxy buffering — the SSE route sends `X-Accel-Buffering: no`).
+3. Backend (Render). New, Blueprint, connect the repo (it reads `render.yaml` and builds `backend/Dockerfile`). Fill in the `sync: false` env vars in the dashboard (table below), and don't bake keys into the image. Add a [cron-job.org](https://cron-job.org) ping to `/health` every ~10 minutes to beat the 15-minute free-tier spin-down.
+4. Frontend (Vercel). Import the repo, set Root Directory to `frontend/`, and set `NEXT_PUBLIC_API_URL` to the Render URL.
+5. Wire it up and check. Set `CORS_ORIGINS` on Render to the `https://<app>.vercel.app` origin, then confirm SSE streams over HTTPS end to end (no mixed content, no proxy buffering; the SSE route sends `X-Accel-Buffering: no`).
 
-**Secrets checklist** (set in the Render dashboard; values never committed):
+Secrets checklist (set these in the Render dashboard; none of the values are committed):
 
 | Env var | Source | Where to set |
 |---|---|---|
-| `DATABASE_URL` | Neon → connection string | Render |
-| `QDRANT_URL` + `QDRANT_API_KEY` | Qdrant Cloud → cluster URL + API key | Render |
-| `REDIS_URL` | Upstash → `rediss://` URL | Render |
+| `DATABASE_URL` | Neon connection string | Render |
+| `QDRANT_URL` + `QDRANT_API_KEY` | Qdrant Cloud cluster URL + API key | Render |
+| `REDIS_URL` | Upstash `rediss://` URL | Render |
 | `GEMINI_API_KEY` | Google AI Studio | Render |
 | `ANTHROPIC_API_KEY` | console.anthropic.com (optional fallback) | Render |
 | `CORS_ORIGINS` | your Vercel origin, e.g. `https://app.vercel.app` | Render |
 | `NEXT_PUBLIC_API_URL` | the Render backend URL | Vercel |
 
-Non-secret vars (`LLM_PROVIDER`, `GEMINI_MODEL`, `EMBEDDING_*`, `CACHE_TTL_SECONDS`) are pre-set in `render.yaml`.
+The non-secret vars (`LLM_PROVIDER`, `GEMINI_MODEL`, `EMBEDDING_*`, `CACHE_TTL_SECONDS`) are already set in `render.yaml`.
