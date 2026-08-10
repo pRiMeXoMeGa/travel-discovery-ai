@@ -38,7 +38,7 @@ lib/
 
 - Filters: date range (availability-aware), guests, price slider, rating, property type, amenities, and sort, with removable active-filter chips (including a city chip).
 - Results: listing cards (photo, price/night, total-for-stay, rating, amenities, distance) plus a MapLibre map with price markers, clustering, and hover/pan sync between map and list. The map fits its bounds to the result pins rather than a static centroid, the clusters recompute on zoom, and clicking a pin opens a popup while clicking a cluster zooms in to split it.
-- Detail page: gallery, amenities grid, embedded map, reviews (filter by language/score/topic, plus aspect scores and an AI summary), availability calendar, price breakdown, and a mocked Reserve that leads to a confirmation.
+- Detail page: gallery, amenities grid, embedded map, reviews (filter by language and score, plus aspect scores and an AI summary — the API and client also support a `topic` filter, but no UI control is wired for it yet), availability calendar, price breakdown, and a mocked Reserve that leads to a confirmation.
 - Wishlist plus compare (2-4) with an AI verdict. The backend builds the verdict from parallel per-listing review synthesis and a grounded LLM call, and the matrix still renders if the verdict isn't available.
 - NL search bar (Phase 5): calls `/api/nl-search`, applies the parsed filters, and shows "understood" chips so you can see what it picked up.
 - Concierge (Phase 5): mounted globally so it's reachable from any page. It streams the visible agent steps and a grounded answer, and listing citations click through to the detail page.
@@ -61,7 +61,37 @@ cp .env.local.example .env.local   # set NEXT_PUBLIC_API_URL
 npm run dev                        # http://localhost:3000
 ```
 
-Scripts: `dev`, `build`, `start`, `lint`.
+Scripts: `dev`, `build`, `start`, `lint`, `test:e2e`.
+
+## End-to-end tests (Playwright)
+
+`e2e/` holds the browser suite; `playwright.config.ts` points it at `http://localhost:3000`
+(override with `E2E_BASE_URL`). There's deliberately no `webServer` block — the tests assert
+against the **real restored corpus**, so the compose stack has to be up first:
+
+```bash
+docker compose up -d            # from the repo root
+cd frontend && npm run test:e2e
+npm run test:e2e -- --grep-invert @llm   # skip the specs that spend LLM quota
+```
+
+Two files, split by cost:
+
+- `booking-surface.spec.ts` — search cards, city switching, the price cap, filter chips, the
+  MapLibre canvas, listing detail, and wishlist round-trip. No LLM calls, ~1 min.
+- `concierge.spec.ts` — NL search parsing and the streaming concierge (agent step trail,
+  grounded answer, itinerary cards). Tagged `@llm`: each test spends free-tier Gemini quota.
+
+Assertions target *shape and behaviour* (a price renders, every card obeys the cap, the saved
+listing is the one that comes back) rather than specific listing names, so a re-ingest doesn't
+break the suite. `workers: 1` is intentional — parallel agent runs hit the free-tier rate limit
+and the 429s look like product failures.
+
+Two selector notes worth knowing before adding tests: a results card is an `<article>`
+wrapping **two** links (photo and content), so a bare `a[href^="/listings/"]` matches half a
+card — the photo link alone contains only the room-type badge. And the step trail renders the
+friendly labels in `ConciergePanel`'s `STEP_LABEL` ("Understanding your request"), not the raw
+agent names.
 
 ## Config
 

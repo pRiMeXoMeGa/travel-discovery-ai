@@ -74,6 +74,13 @@ services:
     environment:
       DATABASE_URL: postgresql://travel:travel@postgres:5432/travel
       QDRANT_URL: http://qdrant:6333
+    volumes:
+      # ingest.py resolves CSVs at Path(__file__).parent.parent / "csvData" — with
+      # WORKDIR /app and `COPY . .` from the ingestion/ build context, that's /csvData
+      # inside the image. Mount the host csvData/ there (read-only: ingestion only
+      # reads these). The space in "los angeles" lives inside this mounted tree, so
+      # it needs no special handling in the mapping itself.
+      - ./csvData:/csvData:ro
     depends_on:
       postgres:
         condition: service_healthy

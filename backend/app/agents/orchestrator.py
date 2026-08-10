@@ -23,6 +23,7 @@ from typing import AsyncIterator
 from .. import llm
 from ..observability import AgentStep, RequestTrace
 from ..schemas import ConciergeRequest, SearchFilters, StructuredQuery
+from ..services import listings as listings_service
 from . import intent, itinerary, retrieval, review_intel
 
 logger = logging.getLogger(__name__)
@@ -59,22 +60,18 @@ def _sq_to_filters(sq: StructuredQuery) -> SearchFilters:
 
 
 async def _fallback_search(sq: StructuredQuery) -> list[dict]:
-    """Traditional filtered search — graceful degradation when agents fail."""
-    from ..routers.search import _build_query, _row_to_card
-    from ..db import get_pool
+    """Traditional filtered search — graceful degradation when agents fail.
 
+    Delegates to the service layer (WS0-C) instead of importing a sibling
+    HTTP router's private helpers (`_build_query`/`_row_to_card` used to be
+    pulled from `routers/search.py` inside this function body, purely to
+    dodge a circular import — `app.services.listings` has no such cycle
+    with `agents.orchestrator`, so this is now a normal top-level import).
+    """
     filters = _sq_to_filters(sq)
     try:
-        _, _, rows_sql, rows_params = _build_query(filters)
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(rows_sql, *rows_params)
-        cards = []
-        for row in rows[:10]:
-            card, ok = _row_to_card(row, None, None, None, None)
-            if ok:
-                cards.append(card.model_dump(mode="json"))
-        return cards
+        cards = await listings_service.fallback_search_candidates(filters, limit=10)
+        return [c.model_dump(mode="json") for c in cards]
     except Exception as exc:  # noqa: BLE001
         logger.error("fallback search failed: %s", exc)
         return []

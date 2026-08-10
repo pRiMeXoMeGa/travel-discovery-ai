@@ -24,7 +24,8 @@ app/
 └── agents/
     ├── orchestrator.py  # coordinates the 4 agents, yields step events for streaming
     ├── intent.py        # NL -> StructuredQuery
-    ├── retrieval.py     # semantic + filtered + geospatial search, ranked + rationale
+    ├── retrieval.py     # semantic (listings + summary vectors, RRF-fused) + hard-filtered
+    │                    # + neighbourhood-level area constraints; ranked + grounded rationale
     ├── review_intel.py  # grounded review synthesis with citations
     └── itinerary.py     # multi-day, multi-property plans
 ```

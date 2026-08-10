@@ -413,7 +413,7 @@ function BookingWidget({
   return (
     <div className="bg-white rounded-2xl border border-gray-200 shadow-lg p-5">
       <div className="flex items-baseline gap-1 mb-4">
-        <span className="text-2xl font-bold text-gray-900">${Math.round(nightly)}</span>
+        <span className="text-2xl font-bold text-gray-900">{price(nightly, listing.city)}</span>
         <span className="text-sm text-gray-500">/ night</span>
       </div>
 

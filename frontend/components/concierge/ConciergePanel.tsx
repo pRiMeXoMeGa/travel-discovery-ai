@@ -171,7 +171,7 @@ function StayCard({ stay, swapIdx, onSwap, currencyNote }: StayCardProps) {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-medium text-gray-700 truncate">{stay.chosen.listing.name}</p>
-                    <p className="text-[11px] text-gray-400">Original pick · ${Math.round(stay.chosen.stay_cost)} total</p>
+                    <p className="text-[11px] text-gray-400">Original pick · {price(stay.chosen.stay_cost, stay.chosen.listing.city)} total</p>
                   </div>
                   <span className="flex-shrink-0 text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">Restore</span>
                 </button>
@@ -197,7 +197,7 @@ function StayCard({ stay, swapIdx, onSwap, currencyNote }: StayCardProps) {
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium text-gray-700 truncate">{alt.listing.name}</p>
                       <p className="text-[11px] text-gray-400 truncate">{alt.listing.neighbourhood ?? alt.listing.city}</p>
-                      <p className="text-[11px] text-gray-500 mt-0.5">${Math.round(alt.listing.price_per_night)}/night · ${Math.round(alt.stay_cost)} total</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">{price(alt.listing.price_per_night, alt.listing.city)}/night · {price(alt.stay_cost, alt.listing.city)} total</p>
                     </div>
                     <span
                       className={`flex-shrink-0 text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors ${
@@ -260,7 +260,7 @@ function ItineraryView({ plan, swaps, onSwap }: ItineraryViewProps) {
                 </span>
               )}
             </p>
-            {false && plan.currency_note && (
+            {plan.currency_note && (
               <p className="text-[11px] text-gray-400 mt-0.5">{plan.currency_note}</p>
             )}
           </div>

@@ -10,8 +10,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..agents import intent as intent_agent
 from ..agents.orchestrator import _sq_to_filters, run_concierge
-from ..schemas import ConciergeRequest, SearchFilters
-from .search import search as run_search
+from ..schemas import ConciergeRequest
+from ..services import listings as listings_service
 
 router = APIRouter(prefix="/api", tags=["agents"])
 
@@ -50,25 +50,14 @@ async def nl_search(req: ConciergeRequest) -> dict:
     """
     sq = await intent_agent.parse_intent(req.query)
 
-    filters = _sq_to_filters(sq)
     # Carry hard-constraint amenities through to the structured filters so the
-    # chips + the actual search agree on what was understood.
-    amenities: list[str] = []
-    from ..agents.retrieval import _parse_constraints
+    # chips + the actual search agree on what was understood. Both steps go
+    # through the service layer (WS0-C) rather than reaching into a sibling
+    # router's endpoint function or an agent's private helper directly.
+    filters = _sq_to_filters(sq)
+    filters = listings_service.apply_constraint_filters(sq, filters)
 
-    parsed = _parse_constraints(sq)
-    amenities = parsed["amenities"]
-    property_types = [parsed["property_type"]] if parsed["property_type"] else []
-
-    filters = SearchFilters(
-        **{
-            **filters.model_dump(),
-            "amenities": amenities,
-            "property_types": property_types,
-        }
-    )
-
-    response = await run_search(filters)
+    response = await listings_service.search_listings(filters)
     return {
         "understanding": sq.model_dump(mode="json"),
         "filters": filters.model_dump(mode="json"),

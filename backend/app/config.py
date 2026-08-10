@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_collection_listings: str = "listings"
     qdrant_collection_reviews: str = "reviews"
+    # Per-property review-summary vectors (one point per listing, payload
+    # {"listing_id": ...}). Built by ingestion `stage_embed_summaries`, shipped
+    # in the snapshot, and queried by agents/retrieval.py (WS0-H). A restored
+    # *older* snapshot may not contain it — retrieval degrades to listings-only.
+    qdrant_collection_summaries: str = "summaries"
 
     # Cache (Redis / Upstash)
     redis_url: str = "redis://localhost:6379/0"
@@ -29,7 +34,8 @@ class Settings(BaseSettings):
     # LLM
     llm_provider: str = "gemini"  # "gemini" | "anthropic"
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
+    # Production value, per render.yaml and .env.example (WS0-G drift fix).
+    gemini_model: str = "gemini-3.1-flash-lite"
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-haiku-4-5-20251001"
 
