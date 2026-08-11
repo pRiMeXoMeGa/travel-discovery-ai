@@ -31,6 +31,11 @@ services:
         value: BAAI/bge-small-en-v1.5
       - key: EMBEDDING_DIM
         value: "384"
+      # WS2: RPM cap applied only to the two LLM-backed MCP tools
+      # (synthesize_reviews, plan_itinerary). The four zero-LLM tools are
+      # uncapped. In-process, matching the single-worker assumption below.
+      - key: MCP_LLM_RPM
+        value: "10"
       # ── Secrets / per-deploy values — set in the dashboard ───────────────
       - key: DATABASE_URL          # Neon Postgres connection string
         sync: false
@@ -45,4 +50,26 @@ services:
       - key: ANTHROPIC_API_KEY     # optional fallback provider key
         sync: false
       - key: CORS_ORIGINS          # set to your https://<app>.vercel.app origin
+        sync: false
+      # ── WS2 MCP ─────────────────────────────────────────────────────────
+      # Bearer token for /mcp. SET THIS BEFORE THE FIRST DEPLOY: the auth
+      # middleware fails CLOSED, so leaving it empty does not expose the
+      # endpoint — it returns 503 and /mcp is simply dead, which looks like a
+      # bug rather than a misconfiguration. Two of the six tools spend Gemini
+      # quota, which is why unset is refused rather than treated as "auth off".
+      # Rotate it before sharing the repo publicly.
+      - key: MCP_API_KEY
+        sync: false
+      # WS2 inbound: base URL of the weather MCP server the itinerary agent
+      # consumes, e.g. https://<weather-service>.onrender.com/mcp
+      #
+      # OPTIONAL BY DESIGN. Leave it unset and the itinerary agent degrades
+      # silently (no forecast note, plan unaffected) — see the MCP section in
+      # the root README. Do NOT add a keep-warm ping for whatever you point it
+      # at: Render's free tier is 750 instance-hours per ACCOUNT, roughly one
+      # near-always-on service, so pinging both this API and a weather service
+      # would exhaust the allowance mid-month and take this API down with it.
+      # The intended setup is: keep-warm this API only, let weather cold-start,
+      # and let the 3s timeout degrade the first call after idle.
+      - key: WEATHER_MCP_URL
         sync: false
