@@ -1,14 +1,14 @@
 fastapi==0.115.*
-uvicorn[standard]==0.32.*
+uvicorn[standard]>=0.32,<0.53   # widened for fastmcp 2.14 (see WS2 note below)
 sse-starlette==2.1.*
 asyncpg==0.30.*
 qdrant-client==1.12.*
 redis==5.2.*
 fastembed==0.4.*          # ONNX bge-small, lightweight (no torch) — fits Render free RAM
-pydantic==2.9.*
+pydantic>=2.9,<2.14       # widened for fastmcp 2.14 (see WS2 note below)
 pydantic-settings==2.6.*
-httpx==0.27.*             # Gemini + Anthropic accessed via REST API (no vendor SDK)
-python-dotenv==1.0.*
+httpx>=0.27,<0.29         # Gemini + Anthropic accessed via REST API (no vendor SDK)
+python-dotenv>=1.0,<1.3  # widened for fastmcp 2.14 (see WS2 note below)
 
 # ── Memory (WS1) ─────────────────────────────────────────────────────────────
 # Verified against the existing httpx/pydantic pins: resolves without torch,
@@ -18,7 +18,23 @@ mem0ai==2.0.*
 # NOT optional: mem0/llms/gemini.py and mem0/embeddings/gemini.py import this at
 # module load and raise ImportError without it, so mem0's Gemini path crashes at
 # startup if it is missing. We use only the LLM half; embeddings stay local.
-google-genai==1.2.*
+# >=1.20 deliberately, not the 1.2.* mem0 installs by default: 1.2.0 caps
+# websockets at <15.0 while fastmcp 2.14 requires >=15.0.1 — an unsatisfiable
+# pair. From 1.20 the cap moves to <15.1, so the two intersect at websockets
+# 15.0.x. Held below 2.0 because that line changes the client API.
+google-genai>=1.20,<2.0
 # NOTE: mem0 pulls the `openai` SDK in as a hard dependency. It is installed but
 # never used — no OpenAI key is configured, and assert_local_and_gemini() fails
 # startup loudly if mem0 has silently fallen back to a remote provider.
+
+# ── MCP server (WS2) ─────────────────────────────────────────────────────────
+# Pinned to 2.14.* deliberately. PyPI now serves fastmcp 3.x, and the official
+# `mcp` SDK is at 2.0 requiring starlette 1.6 — a major jump that FastAPI
+# 0.115 does not accept. 2.14 resolves against starlette 0.46 and mcp 1.29.
+#
+# It is NOT free: it forces httpx 0.27->0.28, pydantic 2.9->2.13 and
+# uvicorn 0.32->0.52, which is why those three pins above are ranges rather
+# than the original exact pins. The upper bounds are deliberate — they pin the
+# versions this combination was actually verified against, so a future resolve
+# cannot silently drift onto an untested httpx or pydantic major.
+fastmcp==2.14.*
