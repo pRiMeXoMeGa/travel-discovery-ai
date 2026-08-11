@@ -89,3 +89,33 @@ test.describe("streaming concierge @llm", () => {
     expect(text).not.toMatch(/something went wrong|failed to/i);
   });
 });
+
+test.describe("memory panel @llm", () => {
+  test("shows what was learned, and the rule it will enforce", async ({ page }) => {
+    await page.goto("/");
+    await page.locator(CONCIERGE_OPEN).click();
+
+    const input = page.locator(CONCIERGE_INPUT);
+    await expect(input).toBeVisible();
+    // A standing rule, phrased so the intent agent captures it as a dealbreaker
+    // rather than a one-off constraint for this search.
+    await input.fill("I hate stairs and never want a shared room. Find me a place in Amsterdam.");
+    await input.press("Enter");
+
+    await page.waitForFunction(
+      () => document.querySelectorAll(".animate-spin").length === 0,
+      undefined,
+      { timeout: 120_000 }
+    );
+
+    // The panel is collapsed by default and summarises counts on the header.
+    const header = page.getByRole("button", { name: /Memory/ }).first();
+    await expect(header).toBeVisible({ timeout: 30_000 });
+    await expect(header).toContainText(/learned|used/);
+
+    // Expanding it must show the individual memories.
+    await header.click();
+    const panel = page.locator('[class*="fixed inset-y-0"]').first();
+    await expect(panel).toContainText(/shared room|stairs|lift|elevator/i);
+  });
+});

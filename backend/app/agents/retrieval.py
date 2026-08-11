@@ -498,8 +498,54 @@ def _parse_constraints(sq: StructuredQuery) -> dict[str, Any]:
     }
 
 
-def _build_qdrant_filter(sq: StructuredQuery, parsed: dict) -> qmodels.Filter | None:
-    """Build a Qdrant payload filter from hard constraints.
+# ── Traveller dealbreakers (WS1) ─────────────────────────────────────────────
+# `retrieve(..., exclude=...)` carries pre-validated {"field", "value"}
+# conditions built by the memory layer from a traveller's standing dealbreakers
+# ("never show me shared rooms again"). They are folded into the SAME
+# must/must_not lists as every other hard constraint below — see
+# `_build_qdrant_filter` and `_row_satisfies` — specifically so they survive
+# both the strict search AND the over-constrained-retry relaxation in
+# `retrieve()`. A dealbreaker that only applied to the strict filter would
+# evaporate exactly when it matters: the moment the strict search comes back
+# thin and the code loosens the other constraints.
+#
+# `Dealbreaker.field` (schemas.py) is already restricted to the closed literal
+# {"amenities", "type"} by `app.memory.store.validate_dealbreaker` before this
+# module ever sees it — both are in the indexed set below. `_INDEXED_FIELDS` is
+# a second, cheap line of defence here (not the primary guarantee): Qdrant
+# Cloud runs STRICT mode and 400s the whole request on an unindexed field, so
+# an out-of-vocabulary condition is dropped and logged rather than taking
+# retrieval down.
+_INDEXED_FIELDS = frozenset(
+    {"city", "type", "neighbourhood", "amenities", "base_price", "beds"}
+)
+
+
+def _exclude_conditions(
+    exclude: dict[str, Any] | None, key: str
+) -> list[tuple[str, Any]]:
+    """Validated (field, value) pairs from `exclude[key]` ("must"/"must_not").
+
+    Silently-in-logs drops any condition on a field outside `_INDEXED_FIELDS`
+    instead of raising — see the module note above.
+    """
+    out: list[tuple[str, Any]] = []
+    for cond in (exclude or {}).get(key) or []:
+        field, value = cond.get("field"), cond.get("value")
+        if field not in _INDEXED_FIELDS:
+            logger.warning(
+                "dropping exclude condition on unindexed field %r (value=%r)",
+                field, value,
+            )
+            continue
+        out.append((field, value))
+    return out
+
+
+def _build_qdrant_filter(
+    sq: StructuredQuery, parsed: dict, exclude: dict[str, Any] | None = None
+) -> qmodels.Filter | None:
+    """Build a Qdrant payload filter from hard constraints (+ WS1 dealbreakers).
 
     Listings payload fields: listing_id, name, type, city, neighbourhood, lat,
     lng, base_price, beds, rating, amenities.
@@ -565,12 +611,23 @@ def _build_qdrant_filter(sq: StructuredQuery, parsed: dict) -> qmodels.Filter | 
             )
         )
 
+    # WS1 dealbreakers — a guarantee, not a hint, so they join the same
+    # must/must_not lists the rest of this function builds from.
+    for field, value in _exclude_conditions(exclude, "must"):
+        must.append(qmodels.FieldCondition(key=field, match=qmodels.MatchValue(value=value)))
+    for field, value in _exclude_conditions(exclude, "must_not"):
+        must_not.append(
+            qmodels.FieldCondition(key=field, match=qmodels.MatchValue(value=value))
+        )
+
     if not must and not must_not:
         return None
     return qmodels.Filter(must=must or None, must_not=must_not or None)
 
 
-def _row_satisfies(sq: StructuredQuery, parsed: dict, row: Any) -> bool:
+def _row_satisfies(
+    sq: StructuredQuery, parsed: dict, row: Any, exclude: dict[str, Any] | None = None
+) -> bool:
     """Constraint re-check for candidates that never passed Qdrant's filter.
 
     Summaries-collection hits carry only {"listing_id"}, so the vector store
@@ -580,6 +637,11 @@ def _row_satisfies(sq: StructuredQuery, parsed: dict, row: Any) -> bool:
     `_resolve_areas`/`_avoid_values` helpers so area semantics cannot drift.
 
     It is a filter only: it can drop a candidate, never invent or alter one.
+
+    `exclude` (WS1 dealbreakers) is re-checked here too, for the identical
+    reason: a summary-only hit never touched a Qdrant payload filter at all, so
+    without this a "never show me shared rooms" rule would leak straight
+    through the one retrieval path that bypasses filtering entirely.
     """
     if sq.city and (row["city"] or "") != sq.city:
         return False
@@ -602,16 +664,35 @@ def _row_satisfies(sq: StructuredQuery, parsed: dict, row: Any) -> bool:
         return False
     if neighbourhood in _avoid_values(sq.city, parsed["avoid_areas"]):
         return False
+    for field, value in _exclude_conditions(exclude, "must"):
+        row_value = row[field]
+        matches = (value in (row_value or [])) if field == "amenities" else (row_value == value)
+        if not matches:
+            return False
+    for field, value in _exclude_conditions(exclude, "must_not"):
+        row_value = row[field]
+        matches = (value in (row_value or [])) if field == "amenities" else (row_value == value)
+        if matches:
+            return False
     return True
 
 
-def _query_text(sq: StructuredQuery) -> str:
-    """Compose the semantic query string from the structured intent."""
+def _query_text(sq: StructuredQuery, unmapped_dealbreakers: list[str] | None = None) -> str:
+    """Compose the semantic query string from the structured intent.
+
+    `unmapped_dealbreakers` is `exclude["unmapped"]` (WS1) — dealbreaker text
+    the memory layer could not validate against the closed payload vocabulary,
+    so it can never become a `must`/`must_not` filter. It must not be silently
+    discarded, so it is folded in here exactly like `soft_preferences` already
+    is: a bias on the embedding, not a guarantee.
+    """
     parts: list[str] = []
     if sq.vibe:
         parts.append(sq.vibe)
     parts.extend(sq.soft_preferences)
     parts.extend(sq.hard_constraints)
+    if unmapped_dealbreakers:
+        parts.extend(unmapped_dealbreakers)
     if sq.city:
         parts.append(f"in {sq.city}")
     if not parts:
@@ -671,10 +752,45 @@ async def _hydrate(listing_ids: list[str]) -> dict[str, Any]:
     return {r["id"]: r for r in rows}
 
 
-def _cache_key(sq: StructuredQuery, limit: int) -> str:
+def _cache_key(sq: StructuredQuery, limit: int, exclude: dict[str, Any] | None = None) -> str:
+    """Cache key. MUST include `exclude` (WS1) — the cache is process-wide and
+    keyed only by query content, so if two travellers issue the same query but
+    one has a "never show me shared rooms" dealbreaker and the other does not,
+    an exclude-blind key would serve one traveller's filtered results to the
+    other. That is a correctness bug AND a privacy leak, not just a staleness
+    one — 300s TTL is plenty of time for that cross-traveller collision.
+
+    Backwards compatible by construction: when `exclude` is empty/None (every
+    pre-WS1 caller) the key is byte-for-byte what this function produced
+    before `exclude` existed, so the existing 300s-TTL cache is NOT bulk
+    invalidated by this change. Only requests that actually pass a non-empty
+    `exclude` mint a new (correctly distinct) key shape.
+    """
     import hashlib, json
     raw = json.dumps(sq.model_dump(mode="json"), sort_keys=True, default=str)
-    return "retrieval:" + hashlib.sha256((raw + f"|{limit}").encode()).hexdigest()
+    suffix = f"|{limit}"
+    if exclude:
+        # Conditions arrive in whatever order the caller assembled them (e.g.
+        # iterating a set of stored dealbreaker rows) — sort each sub-list so
+        # two semantically-identical `exclude` payloads hash to the SAME key
+        # regardless of construction order. json.dumps(sort_keys=True) below
+        # then handles per-dict key ordering.
+        def _norm(conds):
+            return sorted(
+                (
+                    {"field": c.get("field"), "value": c.get("value")}
+                    for c in (conds or [])
+                ),
+                key=lambda c: (str(c["field"]), str(c["value"])),
+            )
+
+        exclude_norm = {
+            "must": _norm(exclude.get("must")),
+            "must_not": _norm(exclude.get("must_not")),
+            "unmapped": sorted(str(u) for u in exclude.get("unmapped") or []),
+        }
+        suffix += "|" + json.dumps(exclude_norm, sort_keys=True, default=str)
+    return "retrieval:" + hashlib.sha256((raw + suffix).encode()).hexdigest()
 
 
 def _looks_like_missing_collection(exc: Exception) -> bool:
@@ -737,7 +853,7 @@ async def _search_summaries(client, vector: list[float], limit: int) -> list[tup
 
 
 async def retrieve(
-    sq: StructuredQuery, limit: int = 20
+    sq: StructuredQuery, limit: int = 20, exclude: dict[str, Any] | None = None
 ) -> list[tuple[ListingCard, str]]:
     """Return ranked (ListingCard, rationale) candidates.
 
@@ -761,11 +877,18 @@ async def retrieve(
 
     If the filtered semantic search yields nothing (over-constrained), retry once
     without amenity/area filters so we degrade to a looser but still city/price
-    bounded result rather than returning empty.
+    bounded result rather than returning empty. `exclude` (WS1 dealbreakers,
+    see the module note above `_build_qdrant_filter`) survives that retry —
+    only the amenity/area *preference* filters are dropped, never a dealbreaker.
+
+    `exclude` shape: {"must": [{"field", "value"}], "must_not": [...],
+    "unmapped": [str, ...]}. `must`/`must_not` become payload filter
+    conditions; `unmapped` cannot (unvalidated field) and is instead folded
+    into the semantic query text as a soft bias — see `_query_text`.
     """
     limit = max(1, min(limit, _HARD_CAP))
 
-    key = _cache_key(sq, limit)
+    key = _cache_key(sq, limit, exclude)
     try:
         cached = await cache_get(key)
         if cached:
@@ -774,7 +897,7 @@ async def retrieve(
         logger.warning("retrieval cache_get failed: %s", exc)
 
     parsed = _parse_constraints(sq)
-    qtext = _query_text(sq)
+    qtext = _query_text(sq, (exclude or {}).get("unmapped"))
     vector = await embed_query(qtext)  # embedded once; reused by both searches
     client = get_qdrant()
 
@@ -790,20 +913,24 @@ async def retrieve(
             with_payload=True,
         )
 
-    qfilter = _build_qdrant_filter(sq, parsed)
+    qfilter = _build_qdrant_filter(sq, parsed, exclude)
     hits, summary_hits = await asyncio.gather(
         _search(qfilter),
         _search_summaries(client, vector, summaries_n),
     )
 
-    # Over-constrained fallback: relax amenity + area filters, keep city/price.
+    # Over-constrained fallback: relax amenity + area filters, keep city/price
+    # — and keep `exclude`. Dropping it here is bug #1: the dealbreaker would
+    # vanish at precisely the moment relaxation kicks in, which is exactly
+    # when the result set is thin enough that a re-appearing "shared room"
+    # is most likely to be visible to the traveller.
     if not hits and qfilter is not None:
         relaxed = StructuredQuery(
             city=sq.city,
             party_size=sq.party_size,
             budget_per_night=sq.budget_per_night,
         )
-        loose = _build_qdrant_filter(relaxed, _parse_constraints(relaxed))
+        loose = _build_qdrant_filter(relaxed, _parse_constraints(relaxed), exclude)
         hits = await _search(loose)
 
     # ── Reciprocal Rank Fusion by listing_id ────────────────────────────────
@@ -839,8 +966,9 @@ async def retrieve(
         if row is None:
             continue
         # Candidates that only came from `summaries` never met the payload
-        # filter — enforce the same constraints here or they leak through.
-        if entry["listing_score"] is None and not _row_satisfies(sq, parsed, row):
+        # filter (dealbreakers included) — enforce the same constraints here
+        # or they leak through.
+        if entry["listing_score"] is None and not _row_satisfies(sq, parsed, row, exclude):
             continue
         amenities = list(row["amenities"]) if row["amenities"] else []
         photos = list(row["photos"]) if row["photos"] else []

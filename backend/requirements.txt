@@ -9,3 +9,16 @@ pydantic==2.9.*
 pydantic-settings==2.6.*
 httpx==0.27.*             # Gemini + Anthropic accessed via REST API (no vendor SDK)
 python-dotenv==1.0.*
+
+# ── Memory (WS1) ─────────────────────────────────────────────────────────────
+# Verified against the existing httpx/pydantic pins: resolves without torch,
+# transformers or sentence-transformers, so the 512 MB Render gate holds. Its
+# own embedder is bypassed entirely by app/memory/fastembed_embedder.py.
+mem0ai==2.0.*
+# NOT optional: mem0/llms/gemini.py and mem0/embeddings/gemini.py import this at
+# module load and raise ImportError without it, so mem0's Gemini path crashes at
+# startup if it is missing. We use only the LLM half; embeddings stay local.
+google-genai==1.2.*
+# NOTE: mem0 pulls the `openai` SDK in as a hard dependency. It is installed but
+# never used — no OpenAI key is configured, and assert_local_and_gemini() fails
+# startup loudly if mem0 has silently fallen back to a remote provider.

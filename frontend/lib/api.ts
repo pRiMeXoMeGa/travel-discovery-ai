@@ -1,4 +1,6 @@
 // Typed client for the backend API.
+import { getUserId } from "./identity";
+
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export interface SearchFilters {
@@ -164,4 +166,15 @@ export async function nlSearch(query: string): Promise<NlSearchResponse> {
   });
   if (!res.ok) throw new Error(`nl-search failed: ${res.status}`);
   return res.json();
+}
+
+// Memory (WS1). The traveller id is scoped to the browser, so it is sent as a
+// query param rather than inferred server-side — there is no session to read.
+export async function forgetMemory(id: string): Promise<void> {
+  const uid = getUserId();
+  const qs = uid ? `?user_id=${encodeURIComponent(uid)}` : "";
+  const res = await fetch(`${API_URL}/api/memory/${encodeURIComponent(id)}${qs}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(`forgetMemory failed: ${res.status}`);
 }

@@ -126,12 +126,21 @@ leave the panel empty until the next turn, and an invisible memory layer is
 indistinguishable from no memory layer. `store.remember` caps itself at 8s and swallows
 its own failures, so a hung write cannot stall the `done` event.
 
-**Writes go to both scopes, from one extraction.** `remember()` runs a single inferred
-`add()` into `user_id`, then mirrors the already-extracted facts into `trip::<id>` with
-`infer=False`. Writing only to the trip scope — as the first draft of `store.py` did —
-means no traveller preference is ever learned during a trip session, which is exactly the
-demo. Calling `add()` twice would instead cost double *and* be non-deterministic: two
-extractions of the same turn can disagree, leaving the scopes silently divergent.
+**SUPERSEDED (2026-08-11) — the mirror was built, then removed.** `remember()` runs a
+single inferred `add()` into `user_id`; the trip scope receives **derived structured
+state** from the parsed `StructuredQuery` (city, dates, party, budget), upserted with
+`infer=False`, not a copy of the traveller's facts.
+
+Mirroring was implemented exactly as this section originally described, and dropped after
+seeing its output: recall returned each fact twice, and `as_prompt_context` rendered every
+line followed by an identical "(this trip) …" line — doubling a memory block that is
+capped at 2000 chars and hardened against injection, for zero information gain. If both
+scopes hold the same facts there is no reason for two scopes.
+
+Traveller preferences are still learned mid-trip, because the inferred write goes to the
+**traveller** scope — that is what makes "I hate stairs", said during a trip, survive into
+the next session. The upsert matters too: without deleting the prior row, trip scope would
+gain one row per turn for the life of the trip.
 
 ## Call budget
 
@@ -142,24 +151,31 @@ extractions of the same turn can disagree, leaving the scopes silently divergent
 | Intent | 1 (unchanged, richer context) |
 | Route runner | 0–1 (unchanged) |
 | Answer | 1 (unchanged) |
-| Memory write — traveller | 1–2 (inferred extraction) |
-| Memory write — trip mirror | **0** (`infer=False`) |
+| Memory write — traveller | **1** (inferred extraction, measured) |
+| Memory write — dealbreaker rules | **0** (`infer=False`) |
+| Memory write — trip state | **0** (`infer=False`) |
 
-Net increase: **1–2 calls per turn, whether or not a trip is active** — the trip mirror is
-free, so trip state no longer changes the budget.
+Net increase: **1 call per turn**, whether or not a trip is active.
 
-Totals, honestly:
+MEASURED 2026-08-11, counting both `app/llm.py` and mem0's own client (mem0 bypasses
+`llm.py`, so it is invisible to the trace and has to be counted separately): `search` 3,
+`search`+trip 3, `review` 4, `itinerary` 4, composite `search`+`review` 4. The "1–2" for
+extraction above was an estimate; across four consecutive turns for the same traveller,
+including turns with accumulated memories to reconcile, mem0 spent **1**.
+
+Totals, measured:
 
 | Route | Before memory | After memory |
 |---|---|---|
-| `search` (route runner makes no LLM call) | 2 | 3–4 ✅ |
-| `review` / `itinerary` (route runner makes 1) | 3 | 4–5 ⚠️ |
+| `search` (route runner makes no LLM call) | 2 | **3** ✅ |
+| `search` + active trip | 2 | **3** ✅ |
+| `review` / `itinerary` (route runner makes 1) | 3 | **4** ✅ |
+| composite `search`+`review` (WS0-F) | — | **4** ✅ |
 
-So CLAUDE.md's "≤ 4 per turn" holds everywhere except a review/itinerary turn whose
-extraction takes two calls, which peaks at **5**. That is one over, not the three-over the
-double-extraction design would have been (7). Either state the ceiling as "≤ 5 on
-planning turns" or cap extraction at one call — but do not leave the stated ceiling
-contradicting the measured worst case.
+**CLAUDE.md's "≤ 4 per turn" holds on every route.** The earlier worry that
+review/itinerary would peak at 5 assumed extraction spends two calls; it spends one.
+Composite routing adds nothing either — the `search` route runner makes no LLM call of its
+own, so running two pipelines costs the same as running the more expensive one alone.
 
 Dealbreaker projection adds nothing — it reads validated metadata.
 
@@ -227,11 +243,14 @@ Both confirmed against the current file.
   `check_out` / `party_size`, so nights would be derived as
   `(sq.check_out - sq.check_in).days`, the same way `itinerary._trip_nights` already does it.
 
-Worth fixing in the same PR. Reviewers who read the code notice annotation drift, and
-this repo is otherwise tidy enough that it stands out.
+**Both fixed (2026-08-11)**, along with the routing defect this WS sat next to:
+`_classify` now returns an ordered `list[str]`, uses `sq` to require a structural signal
+before choosing `itinerary`, and the orchestrator runs every selected pipeline and merges
+their contexts and citations before the answer step. `route` stays a bare string on the
+wire for the frontend; `routes: list[str]` is additive. EVAL Q2 ("…for 3 nights… and tell
+me what guests praise") now routes to `["search", "review"]` and returns both listing
+candidates and review citations.
 
-While in here, note the routing defect this WS sits next to: `_classify` returns exactly
-one route and `"nights"` is in `_PLANNING_KEYWORDS`, so a query asking for stays *and*
-review synthesis routes wholly to `itinerary` and returns zero `[r#]` citations. That is
-`EVAL.md`'s highest-severity finding and `FINDINGS.md` 2.4 — and using `sq` in `_classify`
-is a natural moment to fix it.
+One more bug surfaced while fixing it: `_emit_route_events` replayed `trace.steps` from
+index 0 on every call, so the second pipeline of a composite run re-emitted the first's
+step events. It now takes a per-runner slice.

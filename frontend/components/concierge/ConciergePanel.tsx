@@ -8,11 +8,15 @@ import {
   Citation,
   ConciergeEvent,
   ItineraryPlan,
+  isMemoryStepData,
+  MemoryRecallData,
   PlanStay,
+  RecalledMemory,
   recomputePlanTotal,
 } from "@/lib/concierge";
 import { StarRating } from "@/components/ui/StarRating";
 import { price } from "@/lib/currency";
+import { forgetMemory } from "@/lib/api";
 
 // Friendly labels for the agent step trail. "router" is internal → hidden.
 const STEP_LABEL: Record<string, string> = {
@@ -37,6 +41,12 @@ interface Turn {
   /** Per-stay chosen index overrides for swap-out (key = segment index, value = alternative index or -1 for original). */
   swaps?: Record<number, number>;
   running?: boolean;
+  /** WS1: memories recalled before the intent step. */
+  recalled?: MemoryRecallData;
+  /** WS1: memories written after the answer finished streaming. */
+  written?: RecalledMemory[];
+  /** Ids the user has forgotten this session — hidden optimistically. */
+  forgotten?: string[];
 }
 
 const SUGGESTIONS = [
@@ -308,6 +318,152 @@ function ItineraryView({ plan, swaps, onSwap }: ItineraryViewProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Memory section (WS1)
+// ---------------------------------------------------------------------------
+
+/** Badge describing how strongly a memory is enforced.
+ *
+ * The distinction is the whole point: a validated dealbreaker is a hard Qdrant
+ * payload filter (a guarantee), while everything else is a prompt hint the
+ * model may weigh or ignore. Telling a user a rule is enforced when it isn't is
+ * worse than not having the feature, so soft items say so.
+ */
+function MemoryBadge({ m }: { m: RecalledMemory }) {
+  if (m.kind === "dealbreaker" && m.field && m.value && m.op) {
+    const exclude = m.op === "must_not";
+    return (
+      <span
+        title={`Hard filter: ${m.field} ${m.op} ${m.value}`}
+        className={`flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+          exclude ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"
+        }`}
+      >
+        {exclude ? "never" : "always"} · {m.value}
+      </span>
+    );
+  }
+  return (
+    <span
+      title="Guides the answer, but is not a hard filter"
+      className="flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-100 text-gray-500"
+    >
+      preference
+    </span>
+  );
+}
+
+function MemoryRow({
+  m,
+  isNew,
+  onForget,
+}: {
+  m: RecalledMemory;
+  isNew?: boolean;
+  onForget: (id: string) => void;
+}) {
+  return (
+    <div className="flex items-start gap-2 py-1 group">
+      <span className="flex-1 min-w-0 text-xs text-gray-700 break-words">
+        {m.memory}
+        {isNew && (
+          <span className="ml-1.5 text-[10px] font-semibold text-[#e61e4d] align-middle">new</span>
+        )}
+        {m.score != null && (
+          <span className="ml-1.5 text-[10px] text-gray-400 align-middle">
+            {m.score.toFixed(2)}
+          </span>
+        )}
+      </span>
+      <MemoryBadge m={m} />
+      <button
+        onClick={() => onForget(m.id)}
+        aria-label="Forget this memory"
+        className="flex-shrink-0 text-gray-300 hover:text-red-600 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+      >
+        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+function MemorySection({
+  recalled,
+  written,
+  forgotten,
+  onForget,
+}: {
+  recalled?: MemoryRecallData;
+  written?: RecalledMemory[];
+  forgotten: string[];
+  onForget: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const writtenIds = new Set((written ?? []).map((m) => m.id));
+  const items = [
+    ...(recalled?.traveller ?? []),
+    ...(recalled?.trip ?? []),
+    // A memory written this turn may not have been recalled this turn.
+    ...(written ?? []).filter(
+      (w) =>
+        !(recalled?.traveller ?? []).some((m) => m.id === w.id) &&
+        !(recalled?.trip ?? []).some((m) => m.id === w.id)
+    ),
+  ].filter((m) => !forgotten.includes(m.id));
+
+  const unmapped = recalled?.unmapped ?? [];
+  if (items.length === 0 && unmapped.length === 0) return null;
+
+  return (
+    <div className="border border-gray-100 rounded-xl bg-white">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-600 hover:text-gray-900"
+      >
+        <svg className="w-3.5 h-3.5 text-[#e61e4d]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        Memory
+        <span className="text-gray-400 font-normal">
+          {items.length} used{written?.length ? ` · ${written.length} learned` : ""}
+        </span>
+        <svg
+          className={`w-3 h-3 ml-auto text-gray-400 transition-transform ${expanded ? "rotate-180" : ""}`}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-2.5 border-t border-gray-50 pt-1.5">
+          {items.map((m) => (
+            <MemoryRow key={m.id} m={m} isNew={writtenIds.has(m.id)} onForget={onForget} />
+          ))}
+          {unmapped.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-gray-50">
+              <p className="text-[10px] text-gray-400 mb-1">
+                Noted, but can&apos;t be enforced as a filter — no matching field in the data:
+              </p>
+              {unmapped.map((u) => (
+                <p key={u} className="text-xs text-gray-500 py-0.5">
+                  {u}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
 
@@ -344,6 +500,35 @@ export function ConciergePanel() {
     });
   }
 
+  /** Forget a memory. Hidden immediately, then deleted server-side.
+   *
+   * Optimistic on purpose — the point of the forget button is to prove the
+   * memory is real state you control, and a round-trip delay undercuts that.
+   * A failed delete restores the row rather than lying about it. */
+  const handleForget = useCallback(async (turnIdx: number, id: string) => {
+    setTurns((prev) => {
+      const next = [...prev];
+      const turn = next[turnIdx];
+      if (!turn) return prev;
+      next[turnIdx] = { ...turn, forgotten: [...(turn.forgotten ?? []), id] };
+      return next;
+    });
+    try {
+      await forgetMemory(id);
+    } catch {
+      setTurns((prev) => {
+        const next = [...prev];
+        const turn = next[turnIdx];
+        if (!turn) return prev;
+        next[turnIdx] = {
+          ...turn,
+          forgotten: (turn.forgotten ?? []).filter((f) => f !== id),
+        };
+        return next;
+      });
+    }
+  }, []);
+
   const handleSwap = useCallback((turnIdx: number, stayIdx: number, altIdx: number) => {
     setTurns((prev) => {
       const next = [...prev];
@@ -373,6 +558,21 @@ export function ConciergePanel() {
       for await (const ev of streamConcierge(query, ctrl.signal) as AsyncGenerator<ConciergeEvent>) {
         if (ev.type === "step") {
           if (ev.agent === "router") continue;
+          // Memory is skipped in the step trail the way router is, and rendered
+          // in its own section instead. It has to be: recall and write both
+          // arrive as agent "memory", so the findIndex-by-agent lookup below
+          // would make the write overwrite the recall, and STEP_LABEL has no
+          // "memory" key so both would render as the raw string twice.
+          if (ev.agent === "memory") {
+            if (ev.status !== "done" || !isMemoryStepData(ev.data)) continue;
+            const data = ev.data;
+            if (data.phase === "recall") {
+              patchLast((t) => ({ ...t, recalled: data }));
+            } else if (data.phase === "write") {
+              patchLast((t) => ({ ...t, written: data.written }));
+            }
+            continue;
+          }
           const status = ev.status === "start" ? "running" : ev.status;
           patchLast((t) => {
             const steps = [...(t.steps ?? [])];
@@ -471,6 +671,16 @@ export function ConciergePanel() {
                 </div>
               ) : (
                 <div key={turnIdx} className="space-y-3">
+                  {/* Memory (WS1) — above the step trail: it explains why the
+                      results look the way they do, so it has to be visible
+                      before the user reads them. */}
+                  <MemorySection
+                    recalled={t.recalled}
+                    written={t.written}
+                    forgotten={t.forgotten ?? []}
+                    onForget={(id) => handleForget(turnIdx, id)}
+                  />
+
                   {/* Agent step trail */}
                   {t.steps && t.steps.length > 0 && (
                     <div className="space-y-1">

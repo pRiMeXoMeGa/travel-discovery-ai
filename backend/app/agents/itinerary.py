@@ -15,9 +15,20 @@ Design:
     deterministic availability function. We NEVER let the LLM choose properties
     or prices — only the segment structure. Property selection + costing is
     deterministic and grounded.
+
+WS1 dealbreakers: `plan_itinerary(..., exclude=...)` carries the same
+{"must": [...], "must_not": [...], "unmapped": [...]} shape `retrieval.retrieve()`
+already accepts (see `retrieval.py`'s module docstring / `_build_qdrant_filter`
+note). It is threaded into the ONE `retrieval.retrieve()` call per segment below.
+That single call is also where the "swap-out alternatives" come from — `chosen`
+and `alternatives` are both just entries of the same constrained/priced/ranked
+candidate list — so there is no second call site that could let a dealbreaker
+leak into a swap. `exclude=None` (every caller before WS1) reproduces today's
+calls byte-for-byte.
 """
 import logging
 from datetime import date, timedelta
+from typing import Any
 
 from .. import llm
 from ..availability import is_available_range
@@ -140,9 +151,19 @@ def _segment_query(sq: StructuredQuery, seg: dict) -> StructuredQuery:
 
 
 async def plan_itinerary(
-    sq: StructuredQuery, candidates_per_stay: int = 5, step: AgentStep | None = None
+    sq: StructuredQuery,
+    candidates_per_stay: int = 5,
+    step: AgentStep | None = None,
+    exclude: dict[str, Any] | None = None,
 ) -> dict:
     """Return an itinerary plan dict.
+
+    `exclude` is the WS1 dealbreaker filter (see `retrieval.retrieve`'s
+    docstring for the exact shape). It is passed straight through to every
+    per-segment `retrieval.retrieve()` call — the same call that produces both
+    `chosen` and `alternatives` below — so a "never show me shared rooms" rule
+    holds for the stay AND every one-click swap-out, not just the pick. Default
+    `None` is backwards compatible: every pre-WS1 caller gets identical calls.
 
     Shape:
       {
@@ -178,7 +199,14 @@ async def plan_itinerary(
         cursor = seg_out
 
         seg_sq = _segment_query(sq, seg)
-        candidates = await retrieval.retrieve(seg_sq, limit=candidates_per_stay + len(used_ids) + 3)
+        # `exclude` (WS1) is a hard guarantee, not a preference — it must reach
+        # this call every time, for every segment. `retrieval.retrieve()` keeps
+        # it in place even on its own internal over-constrained retry (it only
+        # relaxes amenity/area *preference* filters there, never `exclude`), so
+        # nothing further needs to relax/retry it here.
+        candidates = await retrieval.retrieve(
+            seg_sq, limit=candidates_per_stay + len(used_ids) + 3, exclude=exclude
+        )
 
         # Cost each candidate over the actual window with the deterministic
         # calendar; keep only those available for the whole window. Avoid
@@ -199,10 +227,15 @@ async def plan_itinerary(
             )
 
         if not priced:
-            notes.append(
-                f"Segment {idx + 1} ({seg.get('theme', 'stay')}): no available "
-                "property matched the constraints for these dates."
-            )
+            # Segment dropped rather than crashing the plan/SSE stream. Say so
+            # explicitly, and — if a traveller dealbreaker was in force — name
+            # that as a possible cause: we never relax `exclude` to fill a
+            # segment, so a dealbreaker-starved segment goes missing loudly
+            # here rather than the guarantee quietly bending to "fill the plan".
+            reason = "no available property matched the constraints for these dates."
+            if exclude and (exclude.get("must") or exclude.get("must_not")):
+                reason += " (dealbreaker filters were enforced, not relaxed, for this search)"
+            notes.append(f"Segment {idx + 1} ({seg.get('theme', 'stay')}): {reason}")
             continue
 
         # Rank: prefer within per-night budget, then by rating, then cost.

@@ -4,7 +4,8 @@ A Booking.com / Airbnb style stays product with a multi-agent concierge undernea
 
 ## Status
 
-Everything below is built and deployed.
+v1 (phases 1-6) is built and deployed. **v2 is in progress on the `v2-agentic` branch** and
+is not yet deployed — see [v2 status](#v2--agentic-platform-in-progress) below.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -15,7 +16,30 @@ Everything below is built and deployed.
 | 5. Frontend AI integration | NL search bar + chips, streaming concierge UI | Done & verified |
 | 6. Deployment | Public URL (Render + Vercel + Neon + Qdrant Cloud + Upstash) | Done & live |
 
-**Live demo:** frontend at https://travel-discovery-ai.vercel.app, backend at https://travel-discovery-api.onrender.com (API docs at `/docs`). Heads up: the backend is on Render's free tier, so the very first request after it's been idle takes ~40-50s to wake up. After that it's quick. It may already be warm when you try it.
+### v2 — agentic platform (in progress)
+
+v2 makes the platform agentic: it remembers the traveller, calls external tools, and
+exposes itself as a tool other agents can use. Work is on `v2-agentic` and runs locally
+against the same stack; **none of it is deployed yet.**
+
+| Workstream | Scope | Status |
+|---|---|---|
+| WS7 · CI | GitHub Actions: ruff + pytest + docker build, LLM mocked | Written, **never run on GitHub** (nothing pushed) |
+| WS0 · Debt paydown | Review sampler, token accounting, service layer, summary-vector retrieval, area aliases, composite routing, repro/drift fixes | Done, verified live |
+| WS1 · Memory | Traveller + trip memory (mem0), dealbreakers as hard filters, memory panel | Done, verified live |
+| WS0-A · LLM summaries | Per-property LLM summaries for a top-N subset | Not started |
+| WS2 · MCP | Expose the platform as an MCP server; consume an external one | Not started |
+| WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Not started |
+| WS4/5/6 | Cross-encoder reranking, model benchmark, booking-document OCR | Not started |
+
+Measured against the 512 MB Render free tier with memory active: **382 MB RSS**, leaving
+~130 MB for WS4's cross-encoder. Gemini calls per turn stay within the ≤4 ceiling
+(3 on `search`, 4 on `review`/`itinerary`/composite) — see
+[backend/README.md](./backend/README.md#memory-ws1).
+
+Tests: **234 backend** (pytest, LLM mocked, zero quota) and **12 Playwright e2e**.
+
+**Live demo (v1):** frontend at https://travel-discovery-ai.vercel.app, backend at https://travel-discovery-api.onrender.com (API docs at `/docs`). Heads up: the backend is on Render's free tier, so the very first request after it's been idle takes ~40-50s to wake up. After that it's quick. It may already be warm when you try it.
 
 The data is real Inside Airbnb (the detailed CSV exports): 50,000 listings (10,480 in Amsterdam, 19,760 in Lisbon, 19,760 in Los Angeles) and 200,000 reviews, roughly 66,667 per city, plus a precomputed summary for each of the 50,000 properties.
 
@@ -96,7 +120,14 @@ I picked real data because it's more credible and gives the AI layer genuine rev
 - Calendar availability is synthetic (deterministic), not the real Inside Airbnb calendar.
 - A global review full-text (GIN) index is ~100-200 MB at 200K reviews. That's fine locally, but worth watching on the 0.5 GB free Postgres. Per-property lookups don't even need it.
 - Embedding all 200K reviews would need a GPU, a faster host, or a cloud embedding API (deferred, see trade-off #1).
-- The backend is on Render's free tier, so it spins down after 15 minutes idle (~40-50s cold start on the next request). The keep-warm ping handles this for demos.
+- The backend is on Render's free tier, so it spins down after 15 minutes idle (~40-50s cold start on the next request). The keep-warm ping is **not actually configured yet** — an earlier version of this README claimed it was.
+
+### v2 limitations (memory, `v2-agentic` branch)
+
+- **Identity is a localStorage UUID, not authentication.** Same-browser persistence only: clear site data or switch device and you are a new traveller. Anyone holding the id can read those memories, so nothing sensitive should be stored under one. `DELETE /api/memory/{id}` is deliberately not authorization-bearing.
+- Memory is **not deployed** — it runs locally only. mem0 adds ~117 MB of imports and a second embedding model, both of which are baked into the image rather than fetched at runtime.
+- The guard that stops remembered text populating hard filters (`city`, dates, budget) is heuristic: it drops a value traceable to memory but not to this turn's request. It fails safe (widens results rather than silently narrowing), but it can drop a value the traveller did state.
+- mem0 pulls the `openai` SDK in as a hard dependency. It is installed but never used — no OpenAI key is configured, and `assert_local_and_gemini()` fails startup loudly if mem0 has silently fallen back to a remote provider.
 
 ## One-command local run
 
@@ -123,6 +154,8 @@ If you want to rebuild the artifacts yourself, run `bash scripts/export_data.sh`
 | `backend/` | FastAPI: traditional search/filter API + streaming multi-agent concierge | [backend/README.md](./backend/README.md) |
 | `frontend/` | Next.js booking-style product surface + conversational concierge | [frontend/README.md](./frontend/README.md) |
 | `ingestion/` | Re-runnable real-CSV ingestion pipeline | [ingestion/README.md](./ingestion/README.md) |
+| `backend/app/memory/` | v2 traveller + trip memory (mem0), the only mem0 entry point | [backend/README.md](./backend/README.md#memory-ws1) |
+| `version2/` | v2 strategy docs + the staged MCP server (not yet wired) | `version2/V2_MASTER_PLAN.md` |
 | `docker-compose.yml` | Full local stack | - |
 
 ## What I'd do with another week
@@ -130,7 +163,13 @@ If you want to rebuild the artifacts yourself, run `bash scripts/export_data.sh`
 - Embed all 200K reviews for proper per-review semantic search, on a GPU box or via a cloud embedding API. The only real blocker here was the 4-core CPU.
 - Move aspect sentiment and the per-property summaries to an LLM (or a fine-tuned model) on a paid tier so they work across languages.
 - Move the deployment to a single always-on VM (Oracle Always-Free or a ~€4/mo Hetzner box) running the same `docker-compose`.
-- Materialize the calendar (or add PostGIS) so the availability filter runs before pagination, and migrate the Qdrant `.search` calls to `query_points`.
+- Materialize the calendar (or add PostGIS) so the availability filter runs before pagination.
+
+Several items from this list have since been done on `v2-agentic`: the Qdrant `.search`
+calls are migrated to `query_points`, the summary vectors are actually queried and fused
+into retrieval, "near downtown"-style constraints resolve to real neighbourhoods, and
+composite queries ("find me X **and** tell me what guests say") now run both pipelines
+instead of only one.
 
 ## Rough cost per query
 

@@ -120,6 +120,21 @@ class _StubAttrs:
         if args:
             self.__dict__["_args"] = args
 
+    def __eq__(self, other: object) -> bool:
+        # The real qdrant_client models are pydantic, so they compare by VALUE.
+        # Without this the stub inherits identity comparison from object, and
+        # any test asserting two independently-built filters are equivalent
+        # fails no matter how correct the code is — the failure looks like a
+        # product bug because both sides repr identically.
+        if type(self) is not type(other):
+            return NotImplemented
+        return self.__dict__ == other.__dict__
+
+    def __hash__(self) -> int:
+        # Defining __eq__ drops the inherited __hash__; some call sites put
+        # conditions in sets/dict keys.
+        return hash((type(self).__name__, repr(sorted(self.__dict__))))
+
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return f"{type(self).__name__}({self.__dict__!r})"
 

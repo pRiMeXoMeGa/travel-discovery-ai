@@ -1,9 +1,5 @@
 """mem0 embedder backed by the app's existing fastembed model.
 
-DESTINATION: backend/app/memory/fastembed_embedder.py
-Staged in version2/. The relative import below (`..embeddings`) only resolves
-once this file sits inside the `app` package — it will not import from version2/.
-
 Why this exists
 ---------------
 mem0 defaults to an API embedder, and its `huggingface` provider pulls
@@ -41,9 +37,7 @@ Wiring
         "app.memory.fastembed_embedder.FastEmbedEmbedder"
     )
 
-("fastembed" is not a real mem0 provider name — this registers one. The dotted
-path assumes the destination location above, so it breaks if the file stays in
-version2/.)
+("fastembed" is not a real mem0 provider name — this registers one.)
 
 If that registry attribute has moved in your installed mem0 version, skip the
 factory and assign after construction instead:

@@ -448,6 +448,167 @@ def test_limit_is_capped_and_overfetch_is_bounded(wired):
     assert wired["query_points_kwargs"][0]["limit"] == retrieval._MAX_SUMMARY_FETCH
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# WS1 — traveller dealbreakers (`exclude`) are a guarantee, not a hint
+# ═════════════════════════════════════════════════════════════════════════════
+def _exclude(must=None, must_not=None, unmapped=None):
+    return {"must": must or [], "must_not": must_not or [], "unmapped": unmapped or []}
+
+
+def test_exclude_reaches_the_strict_filter():
+    sq = StructuredQuery(city="Lisbon")
+    exclude = _exclude(must_not=[{"field": "type", "value": "Shared room"}])
+    qf = retrieval._build_qdrant_filter(sq, retrieval._parse_constraints(sq), exclude)
+    values = [c.match.value for c in qf.must_not]
+    assert "Shared room" in values
+
+
+def test_exclude_must_condition_also_reaches_the_strict_filter():
+    sq = StructuredQuery(city="Lisbon")
+    exclude = _exclude(must=[{"field": "amenities", "value": "elevator"}])
+    qf = retrieval._build_qdrant_filter(sq, retrieval._parse_constraints(sq), exclude)
+    assert "elevator" in _values(_conditions(qf, "amenities"))
+
+
+def test_exclude_on_unindexed_field_is_dropped_not_400d():
+    """A field outside the 6-field Qdrant index must never reach a filter."""
+    sq = StructuredQuery(city="Lisbon")
+    exclude = _exclude(must_not=[{"field": "rating", "value": 1.0}])
+    qf = retrieval._build_qdrant_filter(sq, retrieval._parse_constraints(sq), exclude)
+    # city is still the only condition — nothing on "rating" leaked through
+    assert all(c.key != "rating" for c in (qf.must or []))
+    assert all(c.key != "rating" for c in (qf.must_not or []))
+
+
+def test_exclude_unmapped_never_becomes_a_filter_condition():
+    sq = StructuredQuery(city="Lisbon")
+    exclude = _exclude(unmapped=["no shared bathrooms"])
+    qf = retrieval._build_qdrant_filter(sq, retrieval._parse_constraints(sq), exclude)
+    # only the city condition exists; "unmapped" produced zero FieldConditions
+    assert len(qf.must) == 1
+    assert qf.must[0].key == "city"
+
+
+def test_exclude_unmapped_reaches_the_semantic_query_text():
+    """Cannot become a filter, so it must still bias the embedding (not be dropped)."""
+    text = retrieval._query_text(StructuredQuery(city="Lisbon"), ["no shared bathrooms"])
+    assert "no shared bathrooms" in text
+
+
+def test_exclude_omitted_is_byte_for_byte_the_old_behaviour():
+    """No regressions for the ~100% of callers that don't pass `exclude` yet."""
+    sq = StructuredQuery(city="Lisbon")
+    parsed = retrieval._parse_constraints(sq)
+    with_none = retrieval._build_qdrant_filter(sq, parsed, None)
+    without_arg = retrieval._build_qdrant_filter(sq, parsed)
+    assert with_none.must == without_arg.must
+    assert with_none.must_not == without_arg.must_not
+    assert retrieval._cache_key(sq, 20) == retrieval._cache_key(sq, 20, None)
+    assert retrieval._cache_key(sq, 20) == retrieval._cache_key(sq, 20, {})
+
+
+def test_exclude_reaches_the_relaxed_filter_bug_1_regression(wired, monkeypatch):
+    """THE regression test: a dealbreaker must survive over-constrained relaxation.
+
+    Without the fix, `retrieve()`'s relaxed retry rebuilds the filter from a
+    bare `StructuredQuery(city=..., party_size=..., budget_per_night=...)` and
+    never re-applies `exclude` — so "never show me shared rooms" would
+    evaporate exactly when the strict search comes back empty and the code
+    falls back to the loose filter.
+    """
+    calls = {"n": 0}
+
+    class Client:
+        async def search(self, **kwargs):
+            calls["n"] += 1
+            wired["search_kwargs"].append(kwargs)
+            # First (strict) call returns nothing → forces the relaxed retry.
+            return [] if calls["n"] == 1 else [_hit("a", 0.4)]
+
+        async def query_points(self, **kwargs):
+            return types.SimpleNamespace(points=[])
+
+    wired["rows"] = {"a": _row("a")}
+    monkeypatch.setattr(retrieval, "get_qdrant", lambda: Client())
+
+    sq = StructuredQuery(city="Lisbon", hard_constraints=["wifi", "near Alfama"])
+    exclude = _exclude(must_not=[{"field": "type", "value": "Shared room"}])
+    out = asyncio.run(retrieval.retrieve(sq, limit=5, exclude=exclude))
+
+    assert calls["n"] == 2  # the relaxation path did fire
+    assert [c.id for c, _ in out] == ["a"]
+    # the SECOND (relaxed) call's filter still carries the dealbreaker
+    relaxed_filter = wired["search_kwargs"][-1]["query_filter"]
+    must_not_values = [c.match.value for c in (relaxed_filter.must_not or [])]
+    assert "Shared room" in must_not_values
+    # ...while the amenity/area preference filters were correctly dropped
+    assert _values(_conditions(relaxed_filter, "amenities")) == []
+
+
+def test_exclude_must_not_is_reenforced_on_summary_only_candidates(wired):
+    """The other half of bug 1's failure class: summary-only hits bypass Qdrant
+    filtering entirely (`_row_satisfies`), so `exclude` must be re-checked there
+    too or a dealbreaker leaks through the one path that never touched a filter.
+    """
+    wired["listing_hits"] = [_hit("a", 0.90)]
+    wired["summary_points"] = [_hit("z", 0.99)]
+    wired["rows"] = {
+        "a": _row("a"),
+        "z": _row("z", type="Shared room"),  # would otherwise sneak in
+    }
+
+    sq = StructuredQuery(city="Lisbon")
+    exclude = _exclude(must_not=[{"field": "type", "value": "Shared room"}])
+    out = asyncio.run(retrieval.retrieve(sq, limit=5, exclude=exclude))
+    assert [c.id for c, _ in out] == ["a"]
+
+
+def test_cache_key_differs_for_different_exclude_values():
+    sq = StructuredQuery(city="Lisbon")
+    base = retrieval._cache_key(sq, 20)
+    with_dealbreaker = retrieval._cache_key(
+        sq, 20, _exclude(must_not=[{"field": "type", "value": "Shared room"}])
+    )
+    other_dealbreaker = retrieval._cache_key(
+        sq, 20, _exclude(must_not=[{"field": "type", "value": "Hotel room"}])
+    )
+    # bug 2 regression: a cache key blind to `exclude` would collide all three,
+    # serving one traveller's dealbreaker-filtered results to another.
+    assert len({base, with_dealbreaker, other_dealbreaker}) == 3
+
+
+def test_cache_key_is_stable_across_dict_and_list_ordering():
+    """Two semantically-identical `exclude` payloads, built in different orders,
+    must hash to the SAME key — dict/list construction order must not matter.
+    """
+    sq = StructuredQuery(city="Lisbon")
+    a = retrieval._cache_key(
+        sq,
+        20,
+        {
+            "must": [{"field": "amenities", "value": "elevator"}],
+            "must_not": [
+                {"field": "type", "value": "Shared room"},
+                {"field": "type", "value": "Hotel room"},
+            ],
+            "unmapped": ["no shared bathrooms", "quiet street"],
+        },
+    )
+    b = retrieval._cache_key(
+        sq,
+        20,
+        {
+            "must_not": [
+                {"field": "type", "value": "Hotel room"},
+                {"field": "type", "value": "Shared room"},
+            ],
+            "unmapped": ["quiet street", "no shared bathrooms"],
+            "must": [{"value": "elevator", "field": "amenities"}],
+        },
+    )
+    assert a == b
+
+
 def test_over_constrained_search_still_relaxes(wired, monkeypatch):
     """The pre-existing empty-result fallback must survive the fusion rewrite."""
     calls = {"n": 0}

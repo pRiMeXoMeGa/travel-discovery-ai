@@ -4,6 +4,7 @@
 // Uses fetch + ReadableStream (not EventSource) because the endpoint is POST.
 import { API_URL } from "./api";
 import type { ListingCard } from "./api";
+import { getTripId, getUserId } from "./identity";
 
 export interface Citation {
   kind: "listing" | "review";
@@ -39,6 +40,50 @@ export interface ItineraryPlan {
   stays: PlanStay[];
 }
 
+// Memory (WS1) rides the existing `step` event with agent === "memory" — no new
+// SSE event type. `data.phase` separates the pre-intent recall from the
+// post-answer write, which matters because both arrive under the same agent
+// name and would otherwise collide in the step trail.
+export interface RecalledMemory {
+  id: string;
+  memory: string;
+  score?: number;
+  /** Present only on validated standing rules; absent on soft preferences. */
+  kind?: "dealbreaker";
+  field?: "amenities" | "type";
+  value?: string;
+  op?: "must" | "must_not";
+}
+
+export interface MemoryRecallData {
+  phase: "recall";
+  traveller: RecalledMemory[];
+  trip: RecalledMemory[];
+  /** Rules the user believes are enforced but which have no payload field. */
+  unmapped?: string[];
+}
+
+export interface MemoryWriteData {
+  phase: "write";
+  written: RecalledMemory[];
+}
+
+export type MemoryStepData = MemoryRecallData | MemoryWriteData;
+
+/** Narrow a step event's `unknown` payload to a memory payload.
+ *
+ * A dedicated union arm for `agent: "memory"` does not work: the general arm
+ * types `agent` as `string`, which subsumes the literal, so TypeScript
+ * intersects the two `data` types down to `{}` instead of picking one. A guard
+ * keeps the runtime check and the type narrowing in the same place, which is
+ * also where a malformed frame from the wire has to be rejected anyway.
+ */
+export function isMemoryStepData(data: unknown): data is MemoryStepData {
+  if (typeof data !== "object" || data === null) return false;
+  const phase = (data as { phase?: unknown }).phase;
+  return phase === "recall" || phase === "write";
+}
+
 export type ConciergeEvent =
   | { type: "step"; agent: string; status: "start" | "done" | "error"; data?: unknown }
   | { type: "data"; citations: Citation[] }
@@ -51,10 +96,15 @@ export async function* streamConcierge(
   query: string,
   signal?: AbortSignal,
 ): AsyncGenerator<ConciergeEvent> {
+  // Identity is best-effort: null when storage is blocked, and the backend
+  // treats a missing user_id as an anonymous turn with no memory.
+  const user_id = getUserId();
+  const trip_id = getTripId();
+
   const res = await fetch(`${API_URL}/api/concierge/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, user_id, trip_id }),
     signal,
   });
 

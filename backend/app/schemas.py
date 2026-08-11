@@ -51,6 +51,25 @@ class SearchResponse(BaseModel):
 
 
 # ── Agents (brief §2.3) ───────────────────────────────────────────────────────
+class Dealbreaker(BaseModel):
+    """A standing rule that becomes a hard Qdrant payload filter.
+
+    Captured at *write* time by the intent agent, while the sentence is still
+    visible, because polarity cannot be recovered later: `pets_allowed` means
+    "pets are permitted", so an allergy sufferer needs `must_not` on the same
+    field a dog owner needs `must` on. Scanning remembered text for vocabulary
+    terms misfires the same way — "the elevator was broken, avoid this place"
+    would read as *require* elevator.
+
+    `field`/`value` are validated against the closed payload vocabulary by
+    `app.memory.store.validate_dealbreaker`; anything that fails validation is
+    demoted to a soft preference rather than silently dropped.
+    """
+    field: Literal["amenities", "type"]
+    value: str
+    op: Literal["must", "must_not"]
+
+
 class StructuredQuery(BaseModel):
     """Intent agent output: NL -> structured query."""
     city: str | None = None
@@ -62,11 +81,21 @@ class StructuredQuery(BaseModel):
     hard_constraints: list[str] = Field(default_factory=list)
     soft_preferences: list[str] = Field(default_factory=list)
     vibe: str | None = None
+    # WS1: standing rules stated in *this* turn. Empty on every pre-memory path,
+    # so existing callers are unaffected.
+    dealbreakers: list[Dealbreaker] = Field(default_factory=list)
+    # Rules the turn revokes ("actually, shared rooms are fine now"). Free text —
+    # matched against stored dealbreakers by the store, not used as a filter.
+    suppress_dealbreakers: list[str] = Field(default_factory=list)
 
 
 class ConciergeRequest(BaseModel):
     query: str
     filters: SearchFilters | None = None
+    # WS1 identity. A localStorage UUID minted by the browser: same-browser
+    # persistence, NOT authentication — the README must say so plainly.
+    user_id: str | None = None
+    trip_id: str | None = None
 
 
 class Citation(BaseModel):
