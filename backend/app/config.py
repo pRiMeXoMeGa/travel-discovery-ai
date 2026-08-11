@@ -54,6 +54,19 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_dim: int = 384
 
+    # MCP server (WS2) — platform exposed as tools at /mcp, mounted in main.py.
+    # Bearer auth is enforced as ASGI middleware (mcp_server/auth.py). Unset
+    # is NOT "auth disabled" — BearerAuthMiddleware fails CLOSED (503) when
+    # this is empty, because two of the six tools spend Gemini quota and a
+    # public unauthenticated MCP endpoint would leak that budget. Set in the
+    # Render dashboard as a `sync: false` secret; never commit a real value.
+    mcp_api_key: str | None = None
+    # RPM cap applied only to the two LLM-backed tools (synthesize_reviews,
+    # plan_itinerary) — see mcp_server/auth.py::RateLimitMiddleware. The four
+    # zero-LLM tools are uncapped here (Postgres/Qdrant already have their
+    # own timeouts/pooling limits).
+    mcp_llm_rpm: int = 10
+
     # App
     cors_origins: str = "http://localhost:3000"
 

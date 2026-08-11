@@ -586,7 +586,14 @@ async def _run_itinerary(
         # into its single retrieval call, which produces both the chosen stay
         # and its swap-out alternatives — so a traveller cannot click a swap and
         # land on exactly the thing they banned.
-        plan = await itinerary.plan_itinerary(sq, step=step, exclude=exclude)
+        # `trace` is passed so the WS2 weather MCP call lands on the request
+        # trace as its own `weather_mcp` step and is therefore visible in the
+        # SSE stream. Without it the forecast still reaches plan["notes"], but
+        # the external tool call is invisible — and an invisible integration is
+        # indistinguishable from no integration.
+        plan = await itinerary.plan_itinerary(
+            sq, step=step, exclude=exclude, trace=trace
+        )
         step.status, step.data = "done", _plan_summary_for_trace(plan)
         step.latency_ms = (time.perf_counter() - t0) * 1000
         trace.add(step)
@@ -597,7 +604,13 @@ async def _run_itinerary(
             citations.append({"kind": "listing", "id": lid, "snippet": name})
         return _format_plan_ctx(plan), citations, plan
     except Exception as exc:  # noqa: BLE001
-        logger.warning("itinerary failed (%s) — falling back to search", exc)
+        # Log the type as well as the message: several qdrant/httpx transport
+        # errors stringify to "", so `itinerary failed () — falling back` was
+        # the entire record of a real failure. Same fix as _search_summaries.
+        logger.warning(
+            "itinerary failed (%s: %s) — falling back to search",
+            type(exc).__name__, exc,
+        )
         step.status, step.detail = "error", str(exc)
         step.latency_ms = (time.perf_counter() - t0) * 1000
         trace.add(step)

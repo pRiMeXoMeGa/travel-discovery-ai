@@ -72,9 +72,21 @@ from app.config import settings  # noqa: E402 - must follow the mem0 stub above
 from app.main import app  # noqa: E402
 
 
-@pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch):
+@pytest.fixture(scope="module")
+def client():
     """A TestClient that runs the real app lifespan with memory disabled.
+
+    MODULE-scoped, and it has to be: entering the app lifespan starts the MCP
+    session manager (WS2 mounts fastmcp at /mcp and chains its lifespan into
+    FastAPI's), and `StreamableHTTPSessionManager.run()` raises if called twice
+    on the same instance. `main.py` builds `mcp_app` once at import, so a
+    function-scoped client would enter that lifespan once per test and every
+    test after the first would error at setup. One client per module keeps the
+    lifespan entered exactly once, which is also what uvicorn does in
+    production.
+
+    Uses `monkeypatch`'s session-scoped sibling because a function-scoped
+    `monkeypatch` cannot be requested from a module-scoped fixture.
 
     `with TestClient(...)` triggers FastAPI's real startup/shutdown, which
     would otherwise call `store.init_memory()` -> `Memory.from_config()` on
@@ -84,14 +96,28 @@ def client(monkeypatch: pytest.MonkeyPatch):
     route's status-code contract. Disabling `settings.memory_enabled` skips
     that branch entirely, exactly as `app/main.py`'s lifespan is written to.
     """
-    monkeypatch.setattr(settings, "memory_enabled", False)
-    # Un-block httpx.Client.send for this fixture's scope only (see the
-    # `_REAL_SYNC_SEND` note above) — pytest runs autouse fixtures before
-    # explicitly-requested ones of the same scope, so this reliably applies
-    # after conftest's block and is reverted before it on teardown.
+    mp = pytest.MonkeyPatch()
+    mp.setattr(settings, "memory_enabled", False)
+    mp.setattr(httpx.Client, "send", _REAL_SYNC_SEND)
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _allow_testclient_transport(monkeypatch: pytest.MonkeyPatch):
+    """Re-allow `httpx.Client.send` for each test in this module.
+
+    conftest's network block is autouse and FUNCTION-scoped, so it re-applies
+    before every test and would otherwise undo the module-scoped `client`
+    fixture's patch on the second test onward. TestClient is itself an
+    httpx.Client, but its transport is in-process ASGI — no socket is opened —
+    so exempting it here does not weaken the real protection this block exists
+    for (accidental LLM/API calls).
+    """
     monkeypatch.setattr(httpx.Client, "send", _REAL_SYNC_SEND)
-    with TestClient(app) as c:
-        yield c
 
 
 def test_route_registered_at_exact_frontend_path():

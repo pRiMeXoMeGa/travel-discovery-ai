@@ -202,11 +202,37 @@ def _install_redis_stub() -> None:
     asyncio_mod.Redis = _StubRedis
     asyncio_mod.from_url = _from_url
 
+    # `redis.exceptions` matters beyond app/: fastmcp imports it at module load
+    # (via its key-value cache backend). Without it, `import fastmcp` dies with
+    # "'redis' is not a package" — which surfaced as every test in
+    # test_mcp_server.py SKIPPING while the summary still read all-green. A
+    # stub that is a module rather than a package silently truncates whatever
+    # imports a submodule of it, so give this one the submodules it needs.
+    exceptions_mod = types.ModuleType("redis.exceptions")
+
+    class RedisError(Exception):
+        pass
+
+    for _name in (
+        "RedisError", "ConnectionError", "TimeoutError", "ResponseError",
+        "DataError", "WatchError", "NoScriptError", "BusyLoadingError",
+        "AuthenticationError", "InvalidResponse",
+    ):
+        setattr(exceptions_mod, _name, type(_name, (RedisError,), {}))
+    exceptions_mod.RedisError = RedisError
+
     redis_mod = types.ModuleType("redis")
     redis_mod.asyncio = asyncio_mod
+    redis_mod.exceptions = exceptions_mod
+    redis_mod.Redis = _StubRedis
+    redis_mod.from_url = _from_url
+    # Mark as a package so `import redis.exceptions` resolves rather than
+    # raising "not a package".
+    redis_mod.__path__ = []  # type: ignore[attr-defined]
 
     sys.modules["redis"] = redis_mod
     sys.modules["redis.asyncio"] = asyncio_mod
+    sys.modules["redis.exceptions"] = exceptions_mod
 
 
 def _install_asyncpg_stub() -> None:
@@ -274,9 +300,27 @@ def _install_fastembed_stub() -> None:
 
 
 _install_qdrant_stub()
-_install_redis_stub()
 _install_asyncpg_stub()
 _install_fastembed_stub()
+
+# Redis is stubbed ONLY when the real package is absent (i.e. CI, which installs
+# requirements-dev.txt alone). Locally the suite runs inside the app image where
+# real redis IS installed, and shadowing it with a flat stub module breaks any
+# dependency that imports a submodule: `fastmcp` -> `pydocket` -> `redis.asyncio
+# .ConnectionPool`. That made every test in test_mcp_server.py SKIP while the
+# summary still read all-green — the whole MCP suite silently not running.
+#
+# Using the real client is safe here precisely because nothing in the suite may
+# reach a server: there is no Redis at localhost:6379 during tests, and every
+# call site already treats a cache failure as a warning and continues (see
+# agents/retrieval.py, agents/review_intel.py). Unlike asyncpg — whose absence
+# is fatal to the code paths under test — an unreachable cache is a supported
+# state, so the real client degrades exactly as production would.
+try:
+    import redis  # noqa: F401
+    import redis.asyncio  # noqa: F401
+except ImportError:
+    _install_redis_stub()
 
 
 # ── 3) Network safety net: no test may perform a real HTTP call ─────────────

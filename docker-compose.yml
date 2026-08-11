@@ -47,6 +47,15 @@ services:
       DATABASE_URL: postgresql://travel:travel@postgres:5432/travel
       QDRANT_URL: http://qdrant:6333
       REDIS_URL: redis://redis:6379/0
+      # WS2 inbound: third-party weather MCP server the itinerary agent
+      # consumes (see backend/app/weather.py). Points at the `weather-mcp`
+      # service below, which is profile-gated and NOT started by a plain
+      # `docker compose up` — so this URL is unreachable by default, and
+      # that is fine: the client has a 3s timeout and degrades silently,
+      # exercising the exact failure path the deployed (Render) version
+      # relies on. Run `docker compose --profile tools up` to bring the
+      # weather server up locally too.
+      WEATHER_MCP_URL: http://weather-mcp:8080/mcp
     ports:
       - "8000:8000"
     depends_on:
@@ -56,6 +65,10 @@ services:
         condition: service_started
       redis:
         condition: service_started
+      # Deliberately NOT `weather-mcp`: it is profile-gated (see below), and
+      # a depends_on referencing a service outside every profile the caller
+      # requested would fail `docker compose up` entirely. Weather is an
+      # optional enhancement, never a startup dependency.
 
   frontend:
     build: ./frontend
@@ -86,6 +99,40 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+
+  # WS2 inbound: third-party weather MCP server the itinerary agent consumes
+  # over streamable HTTP (backend/app/weather.py). Profile-gated like
+  # `ingestion` — a plain `docker compose up` never starts it, so the
+  # backend's WEATHER_MCP_URL above is unreachable by default and the
+  # itinerary agent's 3s-timeout/silent-degradation path is what runs. Bring
+  # it up explicitly with `docker compose --profile tools up` to see a real
+  # forecast note land in a trip plan locally.
+  #
+  # `dog830228/mcp_weather_server` (isdaniel/mcp_weather_server upstream):
+  # Open-Meteo-backed, no API key. Its `get_weather_by_datetime_range(city,
+  # start_date, end_date)` tool is the one match for our (city, date-range)
+  # shape, so no geocoding round-trip is needed first. Default port 8080,
+  # endpoint POST /mcp, and the container's `-p 8080:8080`-published default
+  # already implies it binds all interfaces — no extra --host flag needed.
+  #
+  # NOT keep-warm pinged, here or anywhere else, and never should be: Render's
+  # free tier is 750 instance-hours/month PER ACCOUNT (roughly one
+  # near-always-on service), not per service. Pinging both this and the main
+  # API would exhaust that allowance and take the main API down with it. The
+  # deployed weather service (if any) is meant to cold-start and let the
+  # itinerary agent's timeout degrade the call silently — that IS the
+  # demoed behaviour, not a bug to work around.
+  weather-mcp:
+    image: dog830228/mcp_weather_server:latest
+    # The image has NO ENTRYPOINT — its CMD is the whole argv
+    # (`uv run python -m mcp_weather_server --mode stdio`). So `command:` here
+    # must repeat that argv with the mode swapped, not just the flags:
+    # passing `["--mode", "streamable-http"]` alone makes Docker try to exec
+    # "--mode" and the container dies with "executable file not found".
+    command: ["uv", "run", "python", "-m", "mcp_weather_server", "--mode", "streamable-http"]
+    profiles: ["tools"]
+    ports:
+      - "8080:8080"
 
 volumes:
   pgdata:

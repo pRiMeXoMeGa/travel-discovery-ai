@@ -24,6 +24,7 @@ const STEP_LABEL: Record<string, string> = {
   retrieval: "Searching stays",
   review_intel: "Reading reviews",
   itinerary: "Planning your trip",
+  weather_mcp: "Checking the forecast",
   answer: "Writing answer",
 };
 
