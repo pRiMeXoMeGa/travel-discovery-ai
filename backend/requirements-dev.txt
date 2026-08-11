@@ -10,7 +10,17 @@
 pytest==9.1.*
 pytest-asyncio==1.4.*
 ruff==0.16.*
-httpx==0.27.*
-pydantic==2.9.*
+# fastapi (and the starlette it pins) is needed because tests/test_memory_routes.py
+# imports `app.main` and drives it with fastapi.testclient.TestClient. It is light —
+# it is NOT one of the heavy deps conftest.py stubs. Its absence is what broke CI on
+# the first push after WS1: every local run happened inside the app image, where
+# fastapi is installed, so the failure could only ever appear on a runner.
+fastapi==0.115.*
+sse-starlette==2.1.*
+# These three MUST stay range-compatible with backend/requirements.txt. They were
+# exact pins (httpx==0.27.*, pydantic==2.9.*) while production had already widened
+# for fastmcp, which meant CI was testing versions that never ship.
+httpx>=0.27,<0.29
+pydantic>=2.9,<2.14
 pydantic-settings==2.6.*
-python-dotenv==1.0.*
+python-dotenv>=1.0,<1.3
