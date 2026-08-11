@@ -28,7 +28,7 @@ against the same stack; **none of it is deployed yet.**
 | WS0 · Debt paydown | Review sampler, token accounting, service layer, summary-vector retrieval, area aliases, composite routing, repro/drift fixes | Done, verified live |
 | WS1 · Memory | Traveller + trip memory (mem0), dealbreakers as hard filters, memory panel | Done, verified live |
 | WS0-A · LLM summaries | Per-property LLM summaries for a top-N subset | Not started |
-| WS2 · MCP | Expose the platform as an MCP server; consume an external one | Not started |
+| WS2 · MCP | Expose the platform as an MCP server; consume an external one | Done, verified live (not deployed) |
 | WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Not started |
 | WS4/5/6 | Cross-encoder reranking, model benchmark, booking-document OCR | Not started |
 
@@ -129,6 +129,96 @@ I picked real data because it's more credible and gives the AI layer genuine rev
 - The guard that stops remembered text populating hard filters (`city`, dates, budget) is heuristic: it drops a value traceable to memory but not to this turn's request. It fails safe (widens results rather than silently narrowing), but it can drop a value the traveller did state.
 - mem0 pulls the `openai` SDK in as a hard dependency. It is installed but never used — no OpenAI key is configured, and `assert_local_and_gemini()` fails startup loudly if mem0 has silently fallen back to a remote provider.
 
+## MCP — both directions
+
+v2 makes the platform an MCP **server** and an MCP **client**. Both halves run locally
+today; neither is deployed yet. Full spec: [`version2/WS2_MCP.md`](./version2/WS2_MCP.md).
+
+### Outbound — the platform as a tool other agents call
+
+Six tools at `/mcp`, **mounted into the existing FastAPI app** rather than run as a
+separate service, so they share the asyncpg pool, Qdrant client and Redis cache and stay
+inside one Render service (one deploy, one cold start, one keep-warm ping).
+
+| Tool | Cost | Notes |
+|---|---|---|
+| `search_listings` | 0 LLM | semantic + filters, the workhorse |
+| `get_listing_detail` | 0 LLM | gallery, amenities, aspect scores, price breakdown |
+| `check_availability` | 0 LLM | deterministic availability function |
+| `compare_listings` | 0 LLM | matrix only — deliberately **not** the AI verdict path |
+| `synthesize_reviews` | 1 LLM | grounded, `[r#]` citations to real review rows |
+| `plan_itinerary` | 1 LLM | multi-stay plan with real costs |
+
+What makes this more than a CRUD wrapper is `synthesize_reviews`: it is backed by the
+review-intelligence agent, so a calling agent gets **citations it can verify** against
+200K real reviews — and an explicit `abstained` flag with a reason when there is no
+evidence, rather than a confident-sounding summary of nothing.
+
+**Tool docstrings are written for the calling model, not for a human reader.** The
+docstring *is* the schema an agent sees when deciding whether to call a tool, so each
+declares its grounding guarantee, its LLM cost, its abstention behaviour, and real enum
+values verbatim. This is the cheapest quality win in the whole workstream.
+
+`compare_listings` maps to a verdict-free service path on purpose: the HTTP endpoint
+(`POST /api/batch/compare`) spends up to 5 LLM calls building an AI verdict, and a
+browsing agent must not silently burn that quota.
+
+Auth is a bearer token enforced as **ASGI middleware** — transport-agnostic, and immune
+to fastmcp's auth API changing between versions. It fails **closed**: an unset
+`MCP_API_KEY` returns 503 rather than serving an open endpoint, because two of the six
+tools spend Gemini quota. There is a per-key RPM cap on those two only.
+
+### Inbound — the platform consuming an external tool
+
+`backend/app/weather.py` calls a weather MCP server from `plan_itinerary`, once per plan
+(not per stay), after the segment structure and dates are settled. The forecast lands in
+`plan["notes"]`, which the answer prompt already surfaces — so an external tool visibly
+changes the recommendation rather than sitting in the architecture diagram.
+
+The note is built **deterministically** from the returned rows (temperature range,
+dominant condition, days with ≥50% rain probability), not passed through. That is the same
+grounding rule as retrieval rationales and itinerary costs, and it is load-bearing here:
+this particular server returns an *instruction to an LLM* plus hourly JSON, so passing its
+text through verbatim put a wall of field documentation in front of the traveller.
+
+Client discipline: one lazily-created client reused across requests, a **3-second hard
+timeout**, Redis-cached 6h by `(city, date-range)`, and full silent degradation — a
+third-party outage can never break a trip plan or the SSE stream. The call emits an
+`AgentStep("weather_mcp", …)` so it is **visible in the SSE trace**; an invisible
+integration is indistinguishable from no integration.
+
+Zero Gemini calls — it is a tool call, not a completion.
+
+### Running it
+
+```bash
+docker compose up -d                              # API + /mcp
+docker compose --profile tools up -d weather-mcp  # the inbound half, local only
+```
+
+The weather server is profile-gated, so a plain `docker compose up` leaves it unreachable
+— which means the **default local state exercises the degradation path**. That is
+deliberate: it is the behaviour that has to work.
+
+### Free-tier constraint, stated deliberately
+
+Render's free plan is **750 instance-hours per month per account** — roughly one
+near-always-on service. Keep-warm pinging both the API and a weather service is ~1460 h
+and would exhaust the allowance partway through the month, **taking the main API down with
+it**. So: ping only the API, and let weather cold-start and degrade on the 3s timeout.
+
+### Known limitations
+
+- **Nothing is deployed.** Both halves are verified locally only.
+- Open-Meteo's forecast horizon is ~14 days, and `plan_itinerary` defaults to starting
+  ~14 days out when the query carries no dates — so the default demo query often gets no
+  weather note. Ask for dates within two weeks.
+- `search_listings.min_rating` is applied **in Python after hydration**, not in Qdrant:
+  `rating` is not one of the six indexed payload fields, and filtering an unindexed field
+  in Qdrant Cloud's strict mode returns 400. The tool docstring says so.
+- The RPM cap is in-process, matching this app's single-worker assumption. It is not a
+  distributed rate limiter.
+
 ## One-command local run
 
 ```bash
@@ -155,7 +245,9 @@ If you want to rebuild the artifacts yourself, run `bash scripts/export_data.sh`
 | `frontend/` | Next.js booking-style product surface + conversational concierge | [frontend/README.md](./frontend/README.md) |
 | `ingestion/` | Re-runnable real-CSV ingestion pipeline | [ingestion/README.md](./ingestion/README.md) |
 | `backend/app/memory/` | v2 traveller + trip memory (mem0), the only mem0 entry point | [backend/README.md](./backend/README.md#memory-ws1) |
-| `version2/` | v2 strategy docs + the staged MCP server (not yet wired) | `version2/V2_MASTER_PLAN.md` |
+| `backend/app/mcp_server/` | v2 MCP server — six tools at `/mcp`, bearer auth as ASGI middleware | [MCP section](#mcp--both-directions) |
+| `backend/app/weather.py` | v2 MCP *client* — weather, consumed by the itinerary agent | [MCP section](#mcp--both-directions) |
+| `version2/` | v2 strategy docs + requirement mapping | [`JD_MAPPING.md`](./version2/JD_MAPPING.md), `V2_MASTER_PLAN.md` |
 | `docker-compose.yml` | Full local stack | - |
 
 ## What I'd do with another week
