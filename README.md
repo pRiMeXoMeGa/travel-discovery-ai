@@ -200,6 +200,13 @@ The weather server is profile-gated, so a plain `docker compose up` leaves it un
 — which means the **default local state exercises the degradation path**. That is
 deliberate: it is the behaviour that has to work.
 
+**The inbound half is local-only, by decision.** `WEATHER_MCP_URL` is left unset in
+production, so the deployed itinerary agent simply produces no forecast note. The reason is
+the instance-hours arithmetic below: a second free service could not be kept warm, so every
+first call after idle would hit the 3s timeout and return nothing regardless — deploying it
+would buy a worse version of the behaviour that already runs. The setting is still declared
+in `render.yaml`, so turning it on later is a dashboard change, not a code change.
+
 ### Free-tier constraint, stated deliberately
 
 Render's free plan is **750 instance-hours per month per account** — roughly one
@@ -209,7 +216,8 @@ it**. So: ping only the API, and let weather cold-start and degrade on the 3s ti
 
 ### Known limitations
 
-- **Nothing is deployed.** Both halves are verified locally only.
+- **The outbound MCP server is not deployed yet**; it is verified locally. The inbound
+  weather client is local-only *by decision* (see above), not by omission.
 - Open-Meteo's forecast horizon is ~14 days, and `plan_itinerary` defaults to starting
   ~14 days out when the query carries no dates — so the default demo query often gets no
   weather note. Ask for dates within two weeks.

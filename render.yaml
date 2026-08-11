@@ -60,16 +60,20 @@ services:
       # Rotate it before sharing the repo publicly.
       - key: MCP_API_KEY
         sync: false
-      # WS2 inbound: base URL of the weather MCP server the itinerary agent
-      # consumes, e.g. https://<weather-service>.onrender.com/mcp
+      # WS2 inbound: base URL of the weather MCP server.
       #
-      # OPTIONAL BY DESIGN. Leave it unset and the itinerary agent degrades
-      # silently (no forecast note, plan unaffected) — see the MCP section in
-      # the root README. Do NOT add a keep-warm ping for whatever you point it
-      # at: Render's free tier is 750 instance-hours per ACCOUNT, roughly one
-      # near-always-on service, so pinging both this API and a weather service
-      # would exhaust the allowance mid-month and take this API down with it.
-      # The intended setup is: keep-warm this API only, let weather cold-start,
-      # and let the 3s timeout degrade the first call after idle.
+      # DECIDED: LEAVE THIS UNSET IN PRODUCTION. The inbound MCP half runs
+      # locally only (`docker compose --profile tools up -d weather-mcp`).
+      # Unset, `app/weather.py` returns no note and the itinerary agent is
+      # unaffected — the degradation path is the production path, and it is
+      # covered by tests and verified live.
+      #
+      # Why not deploy it: Render's free tier is 750 instance-hours per
+      # ACCOUNT — roughly ONE near-always-on service. The main API needs that
+      # allowance. A second service could not be kept warm, so every first
+      # call after idle would hit the 3s timeout and return nothing anyway.
+      # Declared here rather than deleted so the choice is reversible: set it
+      # to https://<weather-service>.onrender.com/mcp and the feature turns on
+      # with no code change. If you ever do, still do NOT keep-warm it.
       - key: WEATHER_MCP_URL
         sync: false

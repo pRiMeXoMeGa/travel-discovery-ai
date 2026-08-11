@@ -21,7 +21,7 @@ is aspirational. Status is as of 2026-08-11 on the `v2-agentic` branch.
 | Multi-agent orchestration | `backend/app/agents/orchestrator.py` — custom async-generator over intent / retrieval / review-intel / itinerary, with per-step SSE events and token accounting | ✅ shipped in v1 |
 | Composite routing | `orchestrator.py::_classify` — returns an ordered `list[str]`; a query asking for stays *and* review synthesis runs both pipelines and merges contexts before the answer | ✅ WS0-F |
 | **MCP server** (platform as a tool) | `backend/app/mcp_server/server.py` — six tools mounted at `/mcp` inside the existing FastAPI app, sharing the asyncpg pool, Qdrant client and Redis | ✅ WS2 |
-| **MCP client** (platform consuming a tool) | `backend/app/weather.py` — consumed by `agents/itinerary.py::plan_itinerary`, one call per plan, feeding `plan["notes"]` | ✅ WS2 |
+| **MCP client** (platform consuming a tool) | `backend/app/weather.py` — consumed by `agents/itinerary.py::plan_itinerary`, one call per plan, feeding `plan["notes"]` | ✅ WS2 — **local only by decision**, not deployed (free-tier instance-hours; see `WS2_MCP.md`) |
 | MCP auth + rate limiting | `backend/app/mcp_server/auth.py` — bearer auth as ASGI middleware, failing **closed** when unset; RPM cap on the two LLM-backed tools only | ✅ WS2 |
 | Agent memory | `backend/app/memory/store.py` — traveller + trip scopes via mem0; dealbreakers become hard Qdrant payload filters, not prompt hints | ✅ WS1 |
 | LangGraph planner (cycles, HITL interrupt/resume, checkpointer) | — | ❌ **not built** (WS3) |
@@ -64,8 +64,8 @@ extract-then-validate shape WS6 would use, minus the OCR front end.
 
 | Requirement | Where | Status |
 |---|---|---|
-| CI pipeline | `.github/workflows/ci.yml` — ruff + pytest + docker build, pinned actions, Python 3.11 | ⚠️ **written, never executed** — nothing has been pushed |
-| Tests | 273 backend tests; `backend/tests/conftest.py` stubs the heavy deps and blocks network so the suite consumes **zero LLM quota** | ✅ WS7 |
+| CI pipeline | `.github/workflows/ci.yml` — ruff + pytest + docker build, pinned actions, Python 3.11 | ✅ **green on `v2-agentic`** (run 31482009729). Note ~23 MCP tests do NOT run there: `test_mcp_server.py` importorskips `fastmcp`, which is deliberately absent from `requirements-dev.txt` |
+| Tests | 273 backend tests locally (249 in CI, where the MCP suite skips); `backend/tests/conftest.py` stubs the heavy deps and blocks network so the suite consumes **zero LLM quota** | ✅ WS7 |
 | E2E | `frontend/e2e/` — 12 Playwright tests against the real restored corpus | ✅ |
 | Provider/model switching | `backend/app/llm.py` — Gemini and Anthropic behind one module, with `model`/`provider` overrides on all five public functions so a benchmark can switch without restarting the process | ✅ WS0-D |
 | Measured token usage | `llm.py::stream_text_with_usage` + `orchestrator.py` — real `usageMetadata`, tagged `usage_source: measured` vs `estimated`, replacing v1's per-chunk proxy | ✅ WS0-D |
@@ -77,9 +77,9 @@ extract-then-validate shape WS6 would use, minus the OCR front end.
 ## Summary
 
 Sections **1** and **2** are substantially delivered; **4** is delivered except the
-automated benchmark and an actual CI run; **3** is not started.
+automated benchmark; **3** is not started.
 
-Three of the four gaps are the same three unstarted workstreams (WS3, WS4, WS5, WS6),
-which is a scheduling fact rather than a technical blocker — the enabling work each
-depends on is done: WS3 and WS5 both needed the service layer (`backend/app/services/`),
-and WS4 needs the fused retrieval path it now has.
+Every remaining gap is one of the four unstarted workstreams — WS3 (LangGraph), WS4
+(reranking), WS5 (benchmark), WS6 (OCR). That is a scheduling fact rather than a technical
+blocker: the enabling work each depends on is done. WS3 and WS5 both needed the service
+layer (`backend/app/services/`), and WS4 needs the fused retrieval path it now has.

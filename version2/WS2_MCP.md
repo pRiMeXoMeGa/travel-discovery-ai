@@ -187,8 +187,13 @@ Pick one, deliberately, and write it in the README:
    and drop the inbound-MCP claim. Cheapest to run, but it loses the "MCP client" half of
    the story, which is the point of WS2.
 
-Option 1 preserves the claim at zero extra cost and is the recommendation. Do **not** put a
-second cron ping on the weather service without checking your current month's usage.
+Option 1 was the recommendation; **option 2 is what shipped** (2026-08-11). The deciding
+detail is that option 1's "let weather cold-start" still leaves the first call after idle
+timing out — so in practice the deployed behaviour would be the degradation path most of
+the time, which is exactly what option 2 gives for free. The inbound direction is therefore
+demonstrated on the local stack, and the outbound server is what gets deployed.
+
+Do **not** put a second cron ping on any weather service without checking the month's usage.
 
 ### Where it hooks
 
@@ -230,7 +235,12 @@ Zero Gemini calls. It is a tool call, not a completion.
 - [ ] Bearer auth enforced; unauthenticated request returns 401
 - [ ] Claude Desktop screenshot in `version2/img/`
 - [ ] `synthesize_reviews` returns real `[r#]` citations through MCP
-- [ ] Weather MCP deployed, keep-warm pinged, consumed by the itinerary agent
+- [x] Weather MCP consumed by the itinerary agent — **option 2 taken (2026-08-11):
+      local/docker-compose only, NOT deployed and NOT keep-warm pinged.** A second
+      free service could not be kept warm on 750 account-hours, so every first call
+      after idle would time out and return nothing anyway — deploying it would buy a
+      worse version of the degradation path that already runs. `WEATHER_MCP_URL` stays
+      declared in `render.yaml` so the choice is reversible without a code change.
 - [ ] Weather failure degrades silently — verified by stopping the weather service
 - [ ] `weather_mcp` step appears in the SSE trace
 - [ ] README: "MCP — both directions" section; `JD_MAPPING.md` row for section 1
