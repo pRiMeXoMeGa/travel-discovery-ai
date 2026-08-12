@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .cache import close_redis
 from .config import settings
 from .db import close_pool, get_pool
-from .routers import agents, listings, memory, search
+from .routers import agents, listings, memory, planner, search
 from .vectorstore import close_qdrant
 
 logger = logging.getLogger(__name__)
@@ -102,6 +102,10 @@ app.include_router(search.router)
 app.include_router(listings.router)
 app.include_router(agents.router)
 app.include_router(memory.router)
+# WS3 planner. Safe to register unconditionally: the router imports langgraph
+# lazily inside its handlers, so if the dependency is absent the endpoints
+# return an SSE `error` frame rather than the app failing to start.
+app.include_router(planner.router)
 
 if mcp_app is not None:
     # Auth wraps rate-limit wraps the FastMCP app, in that order — see
