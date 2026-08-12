@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     # opaque Qdrant shape error on upsert, never a useful message.
     qdrant_collection_memories: str = "memories"
 
+    # Reranking (WS4) — OFF by default, and that is a measurement not a
+    # preference: the smallest supported cross-encoder costs +156 MB resident
+    # and 20.8s to load, against ~33 MB of headroom on the 512 MB instance
+    # (the app already peaks at ~479 MB). See app/rerank.py. Enable only on an
+    # instance with >=1 GB. `scripts/rerank_eval.py` measures the quality delta
+    # offline without loading the model into the API process.
+    rerank_enabled: bool = False
+    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    # Retrieve wide, rerank narrow. 50 is the plan's figure; it is also roughly
+    # where latency stops being tolerable on one vCPU (1064 ms measured).
+    rerank_candidates: int = 50
+
     # Memory (WS1)
     memory_enabled: bool = True
     # mem0 ships PostHog analytics that phone home on import. Off by default:

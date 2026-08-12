@@ -42,7 +42,7 @@ in the root README, [Two orchestration approaches](../README.md#two-orchestratio
 | Hard-constraint filtering | `retrieval.py::_build_qdrant_filter` — payload conditions on the six indexed fields, plus WS1 dealbreakers as `must`/`must_not` | ✅ |
 | Grounding | Rationales are built deterministically from real Postgres fields, so a rationale cannot claim an attribute the listing lacks | ✅ v1 |
 | Review grounding | `backend/app/agents/review_intel.py` — Postgres full-text over 200K real reviews, aspect-polarity sampling, mandatory `[r#]` citations to real `reviews.id` | ✅ WS0-B |
-| **Cross-encoder reranking** (retrieve 50 → rerank 10) | — | ❌ **not built** (WS4) |
+| **Cross-encoder reranking** (retrieve 50 → rerank 10) | `backend/app/rerank.py` (lazy, flag-gated), `agents/retrieval.py::_apply_rerank`, `scripts/rerank_eval.py` (offline delta measurement) | ✅ WS4 — built and measured, **disabled on the free tier**: +156 MB against 33 MB of headroom. Measured effect: top-10 overlap 3.7/10, top-1 changed 5/6 |
 
 Honest caveat: reviews are **not** vector-embedded — embedding 200K long reviews on
 a 4-core CPU was ~15 hours. Review search is Postgres full-text; the per-property
@@ -76,14 +76,13 @@ extract-then-validate shape WS6 would use, minus the OCR front end.
 
 ## Summary
 
-Sections **1** and **2** are substantially delivered; **4** is delivered except the
-automated benchmark; **3** is not started.
+Sections **1** and **2** are delivered; **4** is delivered except the automated
+benchmark; **3** is not started.
 
 Section 1 is now complete end to end: multi-agent orchestration, composite routing, an MCP
 server AND client, agent memory, and a LangGraph flow with cycles and a human checkpoint.
 
-Every remaining gap is one of the three unstarted workstreams — WS4 (reranking), WS5
-(benchmark), WS6 (OCR). That is a scheduling fact rather than a technical
-blocker: the enabling work each depends on is done. WS5 needs the service layer
-(`backend/app/services/`) and a trustworthy EVAL baseline, both of which now exist, and
-WS4 needs the fused retrieval path it already has.
+Every remaining gap is one of the two unstarted workstreams — WS5 (benchmark) and WS6
+(OCR). That is a scheduling fact rather than a technical
+blocker: WS5 needs the service layer (`backend/app/services/`) and a trustworthy EVAL
+baseline, both of which now exist.

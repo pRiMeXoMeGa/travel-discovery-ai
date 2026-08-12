@@ -30,7 +30,8 @@ against the same stack; **none of it is deployed yet.**
 | WS0-A · LLM summaries | Per-property LLM summaries for a top-N subset | Not started |
 | WS2 · MCP | Expose the platform as an MCP server; consume an external one | Done, verified live (not deployed) |
 | WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Done, verified live (interrupt survives a container restart) |
-| WS4/5/6 | Cross-encoder reranking, model benchmark, booking-document OCR | Not started |
+| WS4 · Reranking | Cross-encoder rerank, built + measured, **disabled on the free tier** | Done — see [Reranking](#reranking-built-measured-and-turned-off) |
+| WS5/6 | Model benchmark, booking-document OCR | Not started |
 
 Measured against the 512 MB Render free tier with memory active: **382 MB RSS**, leaving
 ~130 MB for WS4's cross-encoder. Gemini calls per turn stay within the ≤4 ceiling
@@ -301,6 +302,67 @@ reason to retry, and the third attempt succeeded — the traveller got a real it
 both failures were recorded in `errors`. That only works because an empty plan reports
 `within_budget: None` rather than `True`; before that fix it looked like success and the
 cycle stopped dead.
+
+## Reranking: built, measured, and turned off
+
+The JD asks for chunking, embedding **and reranking**. This has all three — but reranking
+ships **disabled**, and that is a measurement rather than a preference.
+
+### What it would buy
+
+`scripts/rerank_eval.py` runs the golden queries through retrieval twice, once with the
+bi-encoder ordering and once reranked by an ONNX cross-encoder
+(`Xenova/ms-marco-MiniLM-L-6-v2`), over 50 candidates:
+
+| | result |
+|---|---|
+| top-10 set overlap | **3.7 / 10** |
+| top-1 changed | **5 of 6 queries** |
+| mean displacement in the top 10 | 11.2 positions |
+
+Nearly two-thirds of the visible result set changes. This is a real effect, not a marginal
+reshuffle.
+
+The script deliberately does **not** claim the new order is better. Nothing in it knows the
+ground truth, and inventing one would be worse than measuring nothing — sizing an effect
+and scoring it are different jobs, and the second needs a human against `EVAL.md`'s rubric.
+
+### What it costs, and why it is off
+
+Measured on a fresh instance, exercising each subsystem in turn:
+
+| stage | RSS |
+|---|---|
+| idle | 193 MB |
+| + concierge (loads bge-small) | 406 MB |
+| + memory (mem0 + BM25) | 409 MB |
+| + LangGraph planner | **479 MB** |
+
+That leaves **33 MB of headroom on a 512 MB instance**. The smallest supported
+cross-encoder adds **+156 MB resident** and takes **20.8s** to load — about 635 MB total.
+The instance would be OOM-killed, and the first request to touch it would stall for 20
+seconds.
+
+Latency rules it out of the streaming path independently: **1064 ms to rerank 50
+documents** on one vCPU would put a second of dead air before the first token.
+
+So: `RERANK_ENABLED=false`. Set it true on an instance with ≥1 GB and it lazy-loads on
+first use; `app/rerank.py` returns "no opinion" whenever it is off or fails, so retrieval
+keeps its existing order rather than degrading.
+
+### One bug worth recording
+
+The evaluator initially reported that reranking changed **nothing** — 10/10 overlap across
+every query. That was not the model (a direct test scored four obvious documents correctly
+and well separated); it was a cache bug. `retrieve()` caches by `(query, limit, exclude)`,
+and reranking changes the *order of the cached value*, but the flag was not part of the key
+— so the first run wrote reranked results under the un-reranked key and every later
+"baseline" read them back.
+
+Same shape as an earlier bug where dealbreaker-filtered results were cached without the
+filter in the key: **a cache keyed on less than what determines the value**. The dangerous
+part is the failure mode — it made a working feature look useless, and the plausible-sounding
+conclusion "reranking doesn't help on this corpus" would have been wrong.
 
 ## One-command local run
 
