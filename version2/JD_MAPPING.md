@@ -70,19 +70,17 @@ extract-then-validate shape WS6 would use, minus the OCR front end.
 | Provider/model switching | `backend/app/llm.py` — Gemini and Anthropic behind one module, with `model`/`provider` overrides on all five public functions so a benchmark can switch without restarting the process | ✅ WS0-D |
 | Measured token usage | `llm.py::stream_text_with_usage` + `orchestrator.py` — real `usageMetadata`, tagged `usage_source: measured` vs `estimated`, replacing v1's per-chunk proxy | ✅ WS0-D |
 | Quality eval | `EVAL.md` — golden-query set with manual scoring | ⚠️ **stale**: scored on a different model and before WS0-B/E/H, so it needs re-running, not extending |
-| **Automated benchmark harness** (models × golden queries → cost/latency/accuracy) | — | ❌ **not built** (WS5) |
+| **Automated benchmark harness** (models × golden queries → cost/latency/accuracy) | `scripts/benchmark.py` — intent field-level F1, citation validity against real `reviews.id`, answer entity containment. No LLM judge. | ✅ WS5 — results and recommendation in `EVAL.md` |
 
 ---
 
 ## Summary
 
-Sections **1** and **2** are delivered; **4** is delivered except the automated
-benchmark; **3** is not started.
+Sections **1**, **2** and **4** are delivered; **3** is not started.
 
 Section 1 is now complete end to end: multi-agent orchestration, composite routing, an MCP
 server AND client, agent memory, and a LangGraph flow with cycles and a human checkpoint.
 
-Every remaining gap is one of the two unstarted workstreams — WS5 (benchmark) and WS6
-(OCR). That is a scheduling fact rather than a technical
+The only remaining gap is WS6 (OCR), the plan's own designated cut. That is a scheduling fact rather than a technical
 blocker: WS5 needs the service layer (`backend/app/services/`) and a trustworthy EVAL
 baseline, both of which now exist.

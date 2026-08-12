@@ -71,6 +71,58 @@ scoring, run against the live deployment on the real Inside Airbnb corpus (50K l
 on the live deployment. Two medium/low issues remain open and are named below rather than
 scored away.
 
+## Model benchmark (WS5)
+
+`scripts/benchmark.py` — automatable, fixed-input, and deliberately **no LLM judge**. A
+model scoring another model's output produces a number that moves when the judge changes
+and that nobody else can reproduce. Every metric below is checked against something the
+system already knows to be true:
+
+| Metric | Ground truth |
+|---|---|
+| **intent F1** | field-level P/R/F1 against hand-written expected values — the right parse of "an entire place in Lisbon under 130" is not a matter of opinion |
+| **cite ok** | every returned citation id must be a real `reviews.id` — a set-membership check against Postgres |
+| **entity** | every property name the answer mentions must appear in the grounded context it was given — catches the failure that matters, an invented listing |
+
+Run: `docker compose exec -T backend python - < scripts/benchmark.py`
+
+### Results (2026-08-12)
+
+| model | intent F1 | cite ok | entity | p50 ms | p95 ms | tok in | tok out | $/turn |
+|---|---|---|---|---|---|---|---|---|
+| **gemini-3.1-flash-lite** | 100% | 100% | 100% | **3718** | **3724** | 11050 | 1262 | **$0.00080** |
+| gemini-2.5-flash | 100% | 100% | 100% | 7726 | 9816 | 11046 | 1207 | $0.00317 |
+
+Latency is the full concierge turn (retrieval + synthesis + streamed answer), not a raw
+model call. Token counts are **measured** from provider usage metadata, not estimated —
+see WS0-D. Costs multiply those measured tokens by a price table in the script that is
+**placeholder and printed with every run**; verify against current published rates before
+quoting a figure.
+
+### Recommendation: stay on `gemini-3.1-flash-lite`
+
+It matches `gemini-2.5-flash` on every accuracy metric measured, while being **2.1× faster
+at p50** and **~4× cheaper per turn**. On a free-tier box where a cold start already costs
+the first click ~40s, latency is the scarcer resource. Production already runs it — the
+benchmark validates that choice rather than changing it.
+
+The p95 gap is wider than p50 (3724 vs 9816 ms), which matters more than the means: the
+slower model is also less predictable, and the SSE stream makes tail latency directly
+visible to the user.
+
+### What this does NOT establish
+
+**All three accuracy metrics saturated at 100% for both models.** That is a real result —
+neither model hallucinated a listing or fabricated a citation across the run — but it also
+means these metrics do not *discriminate* at this difficulty. The honest reading is
+"no measurable accuracy difference on this golden set", not "the models are equivalent".
+Separating them on quality would need harder cases: ambiguous dates, conflicting
+constraints, multi-city trips, or queries where the right answer is to refuse.
+
+`claude-haiku-4-5` is in the price table and the harness supports it, but was **not run** —
+no `ANTHROPIC_API_KEY` is configured in this environment. The row is absent rather than
+estimated.
+
 ## What changed since 2026-06-19
 
 The previous run is not directly comparable — it was scored on **Gemini 2.0 Flash-Lite**
