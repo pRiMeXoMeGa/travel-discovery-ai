@@ -361,8 +361,19 @@ async def plan_itinerary(
     try:
         plan = await planning_service.plan_itinerary(sq)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("mcp plan_itinerary failed (city=%s): %s", city, exc)
-        return {"error": "internal_error", "detail": str(exc)}
+        # Log AND return the exception type, not just str(exc): several
+        # qdrant/httpx transport errors stringify to "", which made this
+        # surface as `mcp plan_itinerary failed (city=Lisbon): ` server-side
+        # and `{"error": "internal_error", "detail": ""}` to the caller —
+        # a failure with no evidence at either end.
+        logger.warning(
+            "mcp plan_itinerary failed (city=%s): %s: %s",
+            city, type(exc).__name__, exc,
+        )
+        return {
+            "error": "internal_error",
+            "detail": f"{type(exc).__name__}: {exc}".rstrip(": "),
+        }
 
     logger.info(
         "mcp tool=plan_itinerary city=%s elapsed_ms=%.1f",
