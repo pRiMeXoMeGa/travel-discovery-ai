@@ -20,13 +20,19 @@ app/
 ├── routers/
 │   ├── search.py      # POST /api/search
 │   ├── listings.py    # GET /api/listings/{id}, /reviews, POST /api/batch/compare
-│   └── agents.py      # POST /api/concierge/stream (SSE), POST /api/nl-search
+│   ├── agents.py      # POST /api/concierge/stream (SSE), POST /api/nl-search
+│   └── memory.py      # DELETE /api/memory/{id}  (WS1 forget button)
 └── agents/
     ├── orchestrator.py  # coordinates the 4 agents, yields step events for streaming
     ├── intent.py        # NL -> StructuredQuery
-    ├── retrieval.py     # semantic + filtered + geospatial search, ranked + rationale
+    ├── retrieval.py     # semantic (listings + summary vectors, RRF-fused) + hard-filtered
+    │                    # + neighbourhood-level area constraints; ranked + grounded rationale
     ├── review_intel.py  # grounded review synthesis with citations
     └── itinerary.py     # multi-day, multi-property plans
+memory/                  # WS1 traveller + trip memory (mem0)
+├── store.py             # the ONLY entry point — wraps every mem0 call in
+│                        # asyncio.to_thread; never raises, returns empty on failure
+└── fastembed_embedder.py  # local 384-dim embedder so recall costs zero API calls
 ```
 
 ## Endpoints
@@ -40,6 +46,7 @@ app/
 | `POST` | `/api/batch/compare` | Compare 2-4 listings (parallel review synthesis for the AI verdict) |
 | `POST` | `/api/concierge/stream` | Multi-agent concierge over SSE; streams intermediate steps + answer tokens |
 | `POST` | `/api/nl-search` | Parse NL into structured filters for the search bar / chips |
+| `DELETE` | `/api/memory/{id}` | Forget one remembered item (backs the memory panel) |
 
 Interactive docs at `/docs` when it's running.
 
@@ -83,3 +90,108 @@ Qdrant holds `listings` (50K) and `summaries` (50K per-property review summaries
 - `app/availability.py` mirrors `ingestion/availability.py` (same hash, same params), so keep the two in sync.
 - Batch-compare AI verdict: both the matrix (price/amenities/rating/calendar) and the LLM verdict (parallel per-listing review synthesis plus one grounded verdict, cached by the listing set) are implemented. The verdict drops to null (matrix only) if the LLM call fails.
 - Qdrant's `.search` throws a deprecation warning under client 1.12. It still works; the `query_points` migration is deferred.
+
+
+## Memory (WS1)
+
+The concierge remembers the traveller between sessions. Two scopes: **traveller**
+(`user_id`) for standing preferences, and **trip** (`trip::<id>`) for the current
+journey. Both are written from a **single** extraction — one inferred `add()` into the
+traveller scope, then the already-extracted facts mirrored into the trip scope with
+`infer=False` (zero extra LLM calls). Extracting twice would cost double *and* be
+non-deterministic: two runs over the same turn can disagree, so the scopes would
+silently diverge.
+
+Identity is a **localStorage UUID, not authentication** — same-browser persistence
+only. Clear site data or switch device and you are a new traveller. Anyone holding the
+id can read those memories, so nothing sensitive should be stored under it. The
+`DELETE` endpoint is deliberately not authorization-bearing and says so in its docstring.
+
+Four hooks in `orchestrator.run_concierge`, all on the existing SSE vocabulary (no new
+event type — the panel filters on `agent == "memory"` and switches on `data.phase`):
+
+1. **recall** before intent — zero LLM calls (local embed + two Qdrant reads)
+2. remembered context into the **intent** prompt — same call count as before
+3. validated **dealbreakers** into retrieval as hard payload filters
+4. **write** after the answer has finished streaming
+
+### Dealbreakers are filters, not hints
+
+"Never show me shared rooms" becomes a Qdrant `must_not` condition, not a sentence in a
+prompt the model may ignore. That only works because polarity is captured at **write**
+time, by the intent call, while the sentence is still visible:
+
+- polarity is not a property of the field — `pets_allowed` means *pets are permitted*,
+  so an allergy sufferer needs `must_not` on the field a dog owner needs `must` on;
+- scanning remembered text for vocabulary terms misfires on *"the elevator was broken,
+  avoid this place"*, which reads as **require elevator**.
+
+Read-time projection (`extract_dealbreakers`) is therefore pure, deterministic and free.
+
+Rules are also **fetched by kind, never ranked against the query**. Preferences come from
+a similarity `search()`; standing rules come from `get_all(filters={"kind":
+"dealbreaker"})`. That split is not cosmetic — measured with one dealbreaker plus ten
+unrelated memories, the rule fell outside the top-6 similarity window for **3 of 3**
+ordinary queries, so the hard filter silently stopped applying. A guarantee cannot be
+gated on an embedding coin flip.
+Rules are validated against the closed vocabulary (the 18 amenities and four real room
+types) and **fail closed**: anything unenforceable is recorded as a soft preference and
+badged as such in the panel, because a rule the traveller believes is enforced but isn't
+is worse than not having the feature.
+
+All three routes apply dealbreakers — `search`, `review` and `itinerary`. The planner
+threads `exclude` into its single retrieval call, which produces both the chosen stay and
+its swap-out alternatives, so a traveller cannot click a swap and land on exactly the
+thing they banned.
+
+Rules can be revoked in conversation as well as from the panel: `suppress_dealbreakers`
+("actually, shared rooms are fine now") deletes the matching stored rules before the
+turn's write. Matching is word-boundary based against the rule's `field`/`value`
+metadata, never a loose substring — deleting a rule the traveller did *not* ask to remove
+silently un-enforces a guarantee, which is the worse error.
+
+### Safety
+
+- **Override path.** If saved rules empty the result set, the search is retried without
+  them and the answer is told to say so — a standing rule that silently returns nothing
+  is worse than no rule.
+- **Disclosure.** `_ANSWER_SYSTEM` requires the answer to state when saved preferences
+  shaped the results, and when they had to be relaxed.
+- **Injection defence.** Remembered text is attacker-influenced and persistent, so it
+  goes in the *user* message inside a delimited `MEMORY-DATA` block labelled as data,
+  with the delimiter stripped from the content and a 2000-char cap.
+- **No hard filters from memory.** `city`, dates and budget become Qdrant/SQL
+  conditions, so a leaked "Lisbon" would make every other city silently unsearchable.
+  A post-call check drops any of those five fields whose value traces to the memory
+  block but not to this turn's request.
+
+### Cost and footprint
+
+Recall is free (local embeddings) and the trip-state write is free (`infer=False`). The
+memory write adds exactly **one** Gemini call.
+
+Measured per turn, counting both `app/llm.py` and mem0's own calls (mem0 bypasses
+`llm.py` entirely, so it is invisible to the trace and has to be counted separately):
+
+| Route | app/llm.py | mem0 | total |
+|---|---|---|---|
+| `search` | 2 | 1 | **3** |
+| `search` + active trip | 2 | 1 | **3** |
+| `review` | 3 | 1 | **4** |
+| `itinerary` | 3 | 1 | **4** |
+| composite `search`+`review` (EVAL Q2) | 3 | 1 | **4** |
+
+**The ≤4 ceiling holds.** An earlier estimate of 5 assumed mem0 spends 1–2 calls on
+extraction plus an update decision; measured across four consecutive turns for the same
+traveller — including turns with accumulated memories to reconcile — it consistently
+spends **1**. Composite routing costs nothing extra either: the `search` route runner
+makes no LLM call of its own.
+
+Write latency is 3.8–7.9s, so the wait is capped at 15s; the cap bounds how long we
+*wait*, not the write, which completes regardless.
+
+Backend RSS with memory active: **382 MB against Render's 512 MB.**
+
+Both the query embedder and mem0's BM25 sparse encoder are **baked into the image**.
+Fetching them lazily cost ~55s on the first request and overran the memory write cap on
+a cold instance.

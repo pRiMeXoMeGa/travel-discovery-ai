@@ -45,6 +45,7 @@ CLAUDE.md
 # Planning / brief (kept local, not part of the deliverable repo)
 plan.md
 ASSIGNMENT.md
+FINDINGS.md
 Full Stack AI Developer Assignment.pdf
 temp.txt
 REAL_DATA_MIGRATION.md
@@ -56,3 +57,9 @@ csvData/
 # Local Docker Compose overrides (e.g. port remapping for dev machines with
 # a native Postgres on 5432 — see docker-compose.override.yml for the pattern)
 docker-compose.override.yml
+
+# Playwright run output (traces/screenshots on failure, HTML report)
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/.playwright/

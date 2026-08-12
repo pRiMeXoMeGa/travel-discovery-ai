@@ -15,13 +15,36 @@ Design:
     deterministic availability function. We NEVER let the LLM choose properties
     or prices — only the segment structure. Property selection + costing is
     deterministic and grounded.
+
+WS1 dealbreakers: `plan_itinerary(..., exclude=...)` carries the same
+{"must": [...], "must_not": [...], "unmapped": [...]} shape `retrieval.retrieve()`
+already accepts (see `retrieval.py`'s module docstring / `_build_qdrant_filter`
+note). It is threaded into the ONE `retrieval.retrieve()` call per segment below.
+That single call is also where the "swap-out alternatives" come from — `chosen`
+and `alternatives` are both just entries of the same constrained/priced/ranked
+candidate list — so there is no second call site that could let a dealbreaker
+leak into a swap. `exclude=None` (every caller before WS1) reproduces today's
+calls byte-for-byte.
+
+WS2 inbound (MCP client): once the segment structure and trip dates are
+settled -- after `_plan_segments` returns, below -- `app/weather.py` is called
+EXACTLY ONCE per plan (not once per segment/stay) for the whole trip window,
+never the LLM. It can never fail the plan: on any error, timeout, or missing
+config it returns `None` and nothing is added to `notes`. See that module for
+the client/cache/timeout contract. `plan_itinerary(..., trace=...)` is an
+optional, backwards-compatible kwarg (default `None`) -- when a caller passes
+the request's `RequestTrace`, the weather call gets its own `AgentStep
+("weather_mcp", ...)` on that trace so it is visible as its own step in the
+SSE stream; without it, the weather note is still computed and still lands in
+`plan["notes"]`, it just is not separately traced.
 """
 import logging
 from datetime import date, timedelta
+from typing import Any
 
-from .. import llm
+from .. import llm, weather
 from ..availability import is_available_range
-from ..observability import AgentStep
+from ..observability import AgentStep, RequestTrace
 from ..schemas import StructuredQuery
 from . import retrieval
 
@@ -140,9 +163,28 @@ def _segment_query(sq: StructuredQuery, seg: dict) -> StructuredQuery:
 
 
 async def plan_itinerary(
-    sq: StructuredQuery, candidates_per_stay: int = 5, step: AgentStep | None = None
+    sq: StructuredQuery,
+    candidates_per_stay: int = 5,
+    step: AgentStep | None = None,
+    exclude: dict[str, Any] | None = None,
+    trace: RequestTrace | None = None,
 ) -> dict:
     """Return an itinerary plan dict.
+
+    `exclude` is the WS1 dealbreaker filter (see `retrieval.retrieve`'s
+    docstring for the exact shape). It is passed straight through to every
+    per-segment `retrieval.retrieve()` call — the same call that produces both
+    `chosen` and `alternatives` below — so a "never show me shared rooms" rule
+    holds for the stay AND every one-click swap-out, not just the pick. Default
+    `None` is backwards compatible: every pre-WS1 caller gets identical calls.
+
+    `trace` (WS2, optional) is the request's `RequestTrace`. When given, the
+    one-per-plan weather MCP call gets its own `AgentStep("weather_mcp", ...)`
+    appended to it, so the call shows up as its own step in the SSE trace —
+    exactly like `orchestrator.py::_run_itinerary` already does for the
+    "itinerary" step itself. Default `None` is backwards compatible: the
+    weather note is still computed and still lands in `notes` either way,
+    it just is not separately traced without it.
 
     Shape:
       {
@@ -178,7 +220,14 @@ async def plan_itinerary(
         cursor = seg_out
 
         seg_sq = _segment_query(sq, seg)
-        candidates = await retrieval.retrieve(seg_sq, limit=candidates_per_stay + len(used_ids) + 3)
+        # `exclude` (WS1) is a hard guarantee, not a preference — it must reach
+        # this call every time, for every segment. `retrieval.retrieve()` keeps
+        # it in place even on its own internal over-constrained retry (it only
+        # relaxes amenity/area *preference* filters there, never `exclude`), so
+        # nothing further needs to relax/retry it here.
+        candidates = await retrieval.retrieve(
+            seg_sq, limit=candidates_per_stay + len(used_ids) + 3, exclude=exclude
+        )
 
         # Cost each candidate over the actual window with the deterministic
         # calendar; keep only those available for the whole window. Avoid
@@ -199,10 +248,15 @@ async def plan_itinerary(
             )
 
         if not priced:
-            notes.append(
-                f"Segment {idx + 1} ({seg.get('theme', 'stay')}): no available "
-                "property matched the constraints for these dates."
-            )
+            # Segment dropped rather than crashing the plan/SSE stream. Say so
+            # explicitly, and — if a traveller dealbreaker was in force — name
+            # that as a possible cause: we never relax `exclude` to fill a
+            # segment, so a dealbreaker-starved segment goes missing loudly
+            # here rather than the guarantee quietly bending to "fill the plan".
+            reason = "no available property matched the constraints for these dates."
+            if exclude and (exclude.get("must") or exclude.get("must_not")):
+                reason += " (dealbreaker filters were enforced, not relaxed, for this search)"
+            notes.append(f"Segment {idx + 1} ({seg.get('theme', 'stay')}): {reason}")
             continue
 
         # Rank: prefer within per-night budget, then by rating, then cost.
@@ -232,6 +286,30 @@ async def plan_itinerary(
                 "days": [(seg_in + timedelta(days=d)).isoformat() for d in range(nights)],
             }
         )
+
+    # ── WS2 inbound: weather MCP, once per plan (not per stay) ─────────────
+    # Hooked in here deliberately: the segment structure (`segments`) and the
+    # trip dates (`start`, `total_nights`) are both settled by this point, and
+    # nothing below depends on the outcome — this call can never change
+    # `stays`/`total_cost`, only optionally append one line to `notes`. It is
+    # a pure enhancement, not a dependency: `weather.get_forecast_note` is
+    # documented to never raise, and the try/except here is belt-and-suspenders
+    # so a third-party outage cannot break a trip plan or the SSE stream under
+    # any circumstance, matching the contract every agent in orchestrator.py
+    # already honours.
+    weather_step = AgentStep("weather_mcp", "start")
+    try:
+        weather_note = await weather.get_forecast_note(
+            sq.city, start, start + timedelta(days=total_nights), step=weather_step
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("weather_mcp call raised unexpectedly (%s) — ignored", exc)
+        weather_note = None
+        weather_step.status, weather_step.detail = "error", str(exc)
+    if weather_note:
+        notes.append(weather_note)
+    if trace is not None:
+        trace.add(weather_step)
 
     within_budget: bool | None = None
     if sq.budget_total is not None:

@@ -31,6 +31,11 @@ services:
         value: BAAI/bge-small-en-v1.5
       - key: EMBEDDING_DIM
         value: "384"
+      # WS2: RPM cap applied only to the two LLM-backed MCP tools
+      # (synthesize_reviews, plan_itinerary). The four zero-LLM tools are
+      # uncapped. In-process, matching the single-worker assumption below.
+      - key: MCP_LLM_RPM
+        value: "10"
       # ── Secrets / per-deploy values — set in the dashboard ───────────────
       - key: DATABASE_URL          # Neon Postgres connection string
         sync: false
@@ -45,4 +50,30 @@ services:
       - key: ANTHROPIC_API_KEY     # optional fallback provider key
         sync: false
       - key: CORS_ORIGINS          # set to your https://<app>.vercel.app origin
+        sync: false
+      # ── WS2 MCP ─────────────────────────────────────────────────────────
+      # Bearer token for /mcp. SET THIS BEFORE THE FIRST DEPLOY: the auth
+      # middleware fails CLOSED, so leaving it empty does not expose the
+      # endpoint — it returns 503 and /mcp is simply dead, which looks like a
+      # bug rather than a misconfiguration. Two of the six tools spend Gemini
+      # quota, which is why unset is refused rather than treated as "auth off".
+      # Rotate it before sharing the repo publicly.
+      - key: MCP_API_KEY
+        sync: false
+      # WS2 inbound: base URL of the weather MCP server.
+      #
+      # DECIDED: LEAVE THIS UNSET IN PRODUCTION. The inbound MCP half runs
+      # locally only (`docker compose --profile tools up -d weather-mcp`).
+      # Unset, `app/weather.py` returns no note and the itinerary agent is
+      # unaffected — the degradation path is the production path, and it is
+      # covered by tests and verified live.
+      #
+      # Why not deploy it: Render's free tier is 750 instance-hours per
+      # ACCOUNT — roughly ONE near-always-on service. The main API needs that
+      # allowance. A second service could not be kept warm, so every first
+      # call after idle would hit the 3s timeout and return nothing anyway.
+      # Declared here rather than deleted so the choice is reversible: set it
+      # to https://<weather-service>.onrender.com/mcp and the feature turns on
+      # with no code change. If you ever do, still do NOT keep-warm it.
+      - key: WEATHER_MCP_URL
         sync: false

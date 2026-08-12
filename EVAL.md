@@ -2,7 +2,14 @@
 
 **Last run: 2026-06-19 | Provider: Gemini 2.0 Flash-Lite | Deployment: https://travel-discovery-api.onrender.com (live)**
 
-How agent output quality is measured. A small set of **golden travel queries** with manual scoring.
+> **This run is stale and is not a valid baseline.** It was scored against Gemini 2.0
+> Flash-Lite, while production now runs `gemini-3.1-flash-lite` (see `render.yaml`). The
+> table below must be **re-run**, not extended, before any before/after comparison is drawn
+> from it — in particular the reranking delta (WS4) and the model benchmark (WS5), both of
+> which would otherwise attribute a model change to their own effect. The set also holds 6
+> queries against the ~10–15 the Method section below specifies.
+
+How agent output quality is measured. A small set of **golden travel queries** with manual scoring. Define these in Phase 3 and use them to test agents as you build (not retrofitted at the end).
 
 ## Method
 

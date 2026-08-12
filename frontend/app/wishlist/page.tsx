@@ -8,6 +8,7 @@ import { useWishlist, useCompare } from "@/app/providers";
 import { StarRating } from "@/components/ui/StarRating";
 import { CompareBar } from "@/components/compare/CompareBar";
 import { ListingCard } from "@/lib/api";
+import { price } from "@/lib/currency";
 
 export default function WishlistPage() {
   const { wishlist, toggle } = useWishlist();
@@ -146,7 +147,7 @@ export default function WishlistPage() {
                       )}
                     </div>
                     <p className="text-base font-bold text-gray-900 mt-2">
-                      ${Math.round(listing.base_price)}<span className="text-xs font-normal text-gray-500"> / night</span>
+                      {price(listing.base_price, listing.city)}<span className="text-xs font-normal text-gray-500"> / night</span>
                     </p>
                     <div className="flex gap-2 mt-3">
                       <Link
