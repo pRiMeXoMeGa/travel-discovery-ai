@@ -346,7 +346,23 @@ async def plan_itinerary(
         trace.add(weather_step)
 
     within_budget: bool | None = None
-    if sq.budget_total is not None:
+    if not stays:
+        # An EMPTY plan is not "within budget" — there is no plan to assess.
+        # Reporting True here (which a naive `total_cost <= budget` does, since
+        # total_cost is 0.0) tells every caller the opposite of the truth: the
+        # UI renders a green within-budget badge over zero stays, and the WS3
+        # planner's replan cycle never fires because the graph believes it
+        # succeeded. Leave it None — "unknown" — instead.
+        #
+        # No note is added here: the per-segment loop above already appends one
+        # explaining WHY each segment came back empty, which is strictly more
+        # useful than a generic second line saying the same thing.
+        if not notes:
+            notes.append(
+                "No stays matched these constraints, so no plan could be built — "
+                "try relaxing the budget, the dates, or the area."
+            )
+    elif sq.budget_total is not None:
         within_budget = round(total_cost, 2) <= sq.budget_total
         if not within_budget:
             notes.append(

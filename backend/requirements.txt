@@ -38,3 +38,21 @@ google-genai>=1.20,<2.0
 # versions this combination was actually verified against, so a future resolve
 # cannot silently drift onto an untested httpx or pydantic major.
 fastmcp==2.14.*
+
+# ── LangGraph trip planner (WS3) ─────────────────────────────────────────────
+# Used for the NEW planner flow only — the v1 concierge keeps its custom
+# async-generator orchestrator (see agents/orchestrator.py's docstring for why).
+#
+# Gate result (2026-08-12), the thing that actually needed checking: this is the
+# THIRD heavy dependency on a 512 MB box after mem0 and fastmcp, and both of
+# those had resolution conflicts that only appeared on a clean build. A clean
+# resolve of `-r requirements.txt langgraph` holds websockets at 15.0.1 —
+# inside google-genai's <15.1 cap AND fastmcp's >=15.0.1 floor, the exact pair
+# that broke WS2 — and leaves httpx, pydantic, mem0ai and fastmcp untouched.
+# No torch, no transformers. Verified by installing it and importing langgraph,
+# mem0, fastmcp, google-genai and app.main together; 277 tests pass.
+#
+# `langgraph-checkpoint` arrives transitively and supplies BaseCheckpointSaver,
+# which the Redis checkpointer subclasses. NOT using
+# langgraph-checkpoint-postgres: it would pull psycopg alongside asyncpg.
+langgraph==1.2.*

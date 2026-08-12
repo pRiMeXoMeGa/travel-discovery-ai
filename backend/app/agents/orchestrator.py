@@ -671,9 +671,16 @@ def _format_candidates_ctx(top: list[dict]) -> str:
 
 
 def _format_plan_ctx(plan: dict) -> str:
+    # `within_budget` is tri-state: True, False, or None meaning "no budget was
+    # given, or there is no plan to assess" (see itinerary.py). Interpolating it
+    # raw put the literal token "Within budget: None" in the model's context,
+    # which is not something it can reason about sensibly — omit the clause
+    # instead of asking it to interpret a Python singleton.
+    within = plan.get("within_budget")
+    budget_clause = "" if within is None else f" Within budget: {within}."
     lines = [
         f"City: {plan.get('city')}. Total nights: {plan.get('total_nights')}. "
-        f"Total cost: {plan.get('total_cost')}. Within budget: {plan.get('within_budget')}."
+        f"Total cost: {plan.get('total_cost')}.{budget_clause}"
     ]
     for stay in plan.get("stays", []):
         chosen = stay["chosen"]["listing"]

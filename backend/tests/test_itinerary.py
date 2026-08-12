@@ -303,3 +303,36 @@ def test_area_detection_matches_retrievals_own_prefix_list():
         assert itinerary._is_area_constraint(prefix + "the beach")
     assert not itinerary._is_area_constraint("balcony")
     assert not itinerary._is_area_constraint("avoid de pijp")
+
+
+def test_empty_plan_is_not_reported_as_within_budget(monkeypatch):
+    """An empty plan must never claim to be within budget.
+
+    `total_cost` is 0.0 when nothing matched, so a naive
+    `total_cost <= budget_total` returns True — telling every caller the
+    opposite of the truth. The UI would render a green within-budget badge over
+    zero stays, and WS3's planner replan cycle would never fire because the
+    graph believed the plan succeeded. Found exactly that way: a $6 trip budget
+    produced stays=0, total_cost=0.0, within_budget=True.
+    """
+    _force_single_segment(monkeypatch)
+    _always_available(monkeypatch)
+    _wire_retrieve(monkeypatch, default_cards=[])
+
+    plan = _run(itinerary.plan_itinerary(_sq(budget_total=6.0)))
+
+    assert plan["stays"] == []
+    assert plan["within_budget"] is None, "empty plan must be 'unknown', not True"
+
+
+def test_within_budget_still_computed_when_stays_exist(monkeypatch):
+    """The guard above must not suppress the real budget check."""
+    _force_single_segment(monkeypatch)
+    _always_available(monkeypatch)
+    _wire_retrieve(monkeypatch, default_cards=[_card("cheap", price=50, rating=4.0)])
+
+    under = _run(itinerary.plan_itinerary(_sq(budget_total=10_000.0)))
+    over = _run(itinerary.plan_itinerary(_sq(budget_total=1.0)))
+
+    assert under["stays"] and under["within_budget"] is True
+    assert over["stays"] and over["within_budget"] is False
