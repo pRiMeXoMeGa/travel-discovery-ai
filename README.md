@@ -27,7 +27,7 @@ against the same stack; **none of it is deployed yet.**
 | WS7 · CI | GitHub Actions: ruff + pytest + docker build, LLM mocked | Done — **green on `v2-agentic`** |
 | WS0 · Debt paydown | Review sampler, token accounting, service layer, summary-vector retrieval, area aliases, composite routing, repro/drift fixes | Done, verified live |
 | WS1 · Memory | Traveller + trip memory (mem0), dealbreakers as hard filters, memory panel | Done, verified live |
-| WS0-A · LLM summaries | Per-property LLM summaries for a top-N subset | Not started |
+| WS0-A · LLM summaries | Real LLM summaries for the max-evidence subset, plus a `provenance` flag so the UI only claims "AI" where it is true | Done — [see below](#the-ai-review-summary) |
 | WS2 · MCP | Expose the platform as an MCP server; consume an external one | Done — server **deployed and verified in production**; the weather client is local-only [by decision](#mcp--both-directions) |
 | WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Done, **deployed** — interrupt survives a container restart |
 | WS4 · Reranking | Cross-encoder rerank, built + measured, **disabled on the free tier** | Done — see [Reranking](#reranking-built-measured-and-turned-off) |
@@ -105,6 +105,30 @@ I went with real Inside Airbnb data (the *detailed* `listings.csv` / `reviews.cs
 The ingestion pipeline (`ingestion/ingest.py`, and it's re-runnable) parses the CSVs, cleans the prices (`$1,234.00` becomes a float, median-imputed when missing), normalizes the free-form `amenities` JSON down to an 18-term vocabulary, detects each review's language with `langdetect`, builds galleries of at least 4 photos from the real `picture_url`s, runs the ingest-time enrichments (aspect sentiment, per-property summary, neighbourhood price percentile, amenity normalization), and indexes everything into Postgres and Qdrant.
 
 I picked real data because it's more credible and gives the AI layer genuine review text to work with. These three cities together clear the brief's 50K-listing floor while still fitting the free tiers. Amsterdam (10,480) is the smaller market and Lisbon and LA are the larger ones.
+
+## The "AI Review Summary"
+
+Worth being precise about, because the first version of this was a false claim. Every
+property has a `listing_summaries` row, and the UI used to render all 50,000 of them under a
+sparkle icon labelled **"AI Review Summary"**. They were not AI-generated: the default
+ingest path builds them by concatenating the first ~120 characters of two reviews, which
+routinely truncates mid-word.
+
+Two changes, and both were needed:
+
+- **`scripts/backfill_summaries.py`** writes genuine model summaries and re-embeds those
+  vectors into Qdrant. It runs over the highest-evidence listings — the corpus caps reviews
+  at 10 per property, so ordering by review count saturates at 1,286 listings and there is
+  no point pretending a deeper ranking exists.
+- **`listing_summaries.provenance`** (`'heuristic'` | `'llm'`) reaches the client as
+  `summary_provenance`. The sparkle panel renders only for `'llm'`; everything else is
+  labelled *"What guests said · quoted from reviews"*. So the label is accurate for all
+  50,000 rows regardless of how much of the backfill has run.
+
+The per-review `aspect_avg` scores are deliberately left heuristic even on backfilled rows.
+The review agent feeds them to the answer model under the heading "AGGREGATE ASPECT SCORES",
+so letting the summarizer supply its own numbers would quietly convert a measured value into
+an estimated one presented as measured.
 
 ## Key trade-offs
 
@@ -403,7 +427,7 @@ If you want to rebuild the artifacts yourself, run `bash scripts/export_data.sh`
 ## What I'd do with another week
 
 - Embed all 200K reviews for proper per-review semantic search, on a GPU box or via a cloud embedding API. The only real blocker here was the 4-core CPU.
-- Move aspect sentiment and the per-property summaries to an LLM (or a fine-tuned model) on a paid tier so they work across languages.
+- Finish the LLM summary backfill across all 50,000 properties (the max-evidence subset is done) and move aspect sentiment to an LLM too, on a paid tier, so both work across languages.
 - Move the deployment to a single always-on VM (Oracle Always-Free or a ~€4/mo Hetzner box) running the same `docker-compose`.
 - Materialize the calendar (or add PostGIS) so the availability filter runs before pagination.
 

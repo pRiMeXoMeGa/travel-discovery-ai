@@ -97,6 +97,53 @@ test.describe("listing detail", () => {
     // Price breakdown / reserve panel is the anchor of the right rail.
     await expect(page.getByText(/night/i).first()).toBeVisible();
   });
+
+  test("summary panel only claims 'AI' when the summary really is AI-written", async ({
+    page,
+  }) => {
+    // The regression this guards is a false claim, not a crash: every listing
+    // has a summary, but only the WS0-A backfilled subset is model-written.
+    // The rest are two review quotes truncated at ~120 chars, and they used to
+    // render under a sparkle icon labelled "AI Review Summary".
+    const seen = { ai: 0, quoted: 0 };
+
+    for (const city of ["Lisbon", "Amsterdam", "Los Angeles"]) {
+      await page.goto(`/?city=${encodeURIComponent(city)}`);
+      await waitForResults(page);
+      // Read the detail payload by observing the request the page already makes.
+      // Issuing our own fetch() would need the API origin and CORS; the client
+      // calls an absolute NEXT_PUBLIC_API_URL, not a same-origin proxy.
+      const detailResponse = page.waitForResponse(
+        (r) => /\/api\/listings\/[0-9a-f-]{36}(\?|$)/.test(r.url()) && r.ok(),
+        { timeout: 60_000 },
+      );
+      await page.locator(CARD_LINK).first().click();
+      await page.waitForURL(/\/listings\/[0-9a-f-]{36}/, { timeout: 60_000 });
+      await expect(page.locator("h1").first()).toBeVisible({ timeout: 30_000 });
+
+      const detail = (await (await detailResponse).json()) as {
+        summary?: string;
+        summary_provenance?: string | null;
+      };
+      if (!detail.summary || detail.summary === "No reviews yet.") continue;
+
+      const aiLabel = page.getByText("AI Review Summary");
+      const quotedLabel = page.getByText("What guests said");
+
+      if (detail.summary_provenance === "llm") {
+        await expect(aiLabel).toBeVisible();
+        seen.ai += 1;
+      } else {
+        // The important direction: a heuristic summary must NOT be badged as AI.
+        await expect(aiLabel).toHaveCount(0);
+        await expect(quotedLabel).toBeVisible();
+        seen.quoted += 1;
+      }
+    }
+
+    // Guard against the test passing because every page was skipped.
+    expect(seen.ai + seen.quoted).toBeGreaterThan(0);
+  });
 });
 
 test.describe("wishlist and compare", () => {

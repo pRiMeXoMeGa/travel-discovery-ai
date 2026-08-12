@@ -45,7 +45,7 @@ memory/                  # WS1 traveller + trip memory (mem0)
 |---|---|---|
 | `GET`  | `/health` | Liveness (also the keep-warm ping target) |
 | `POST` | `/api/search` | Filtered/sorted search with calendar availability |
-| `GET`  | `/api/listings/{id}` | Property detail (gallery, amenities, aspect scores, summary, price breakdown) |
+| `GET`  | `/api/listings/{id}` | Property detail (gallery, amenities, aspect scores, summary + `summary_provenance`, price breakdown) |
 | `GET`  | `/api/listings/{id}/reviews` | Reviews filtered by language / score / topic |
 | `POST` | `/api/batch/compare` | Compare 2-4 listings (parallel review synthesis for the AI verdict) |
 | `POST` | `/api/concierge/stream` | Multi-agent concierge over SSE; streams intermediate steps + answer tokens |
@@ -80,6 +80,8 @@ uvicorn app.main:app --reload --port 8000   # needs a .env at repo root (see ../
 ## Vector layout (Option A, real data)
 
 Qdrant holds `listings` (50K) and `summaries` (50K per-property review summaries), both at 384-dim. Reviews are not vector-embedded: all 200K live in Postgres behind a GIN full-text index (`idx_reviews_fts`). This was a deliberate call (the 4-core CPU couldn't embed 200K long reviews in any reasonable time), so review search comes from Postgres full-text. Per-property review retrieval is a fast indexed `listing_id` slice, so there's no latency cost; what you give up is semantic recall, which the summary vectors and the LLM reading the real rows make up for. There's more on this in the root README's "Key trade-offs".
+
+**Summary provenance (WS0-A).** `listing_summaries.provenance` is `'llm'` only for rows written by `scripts/backfill_summaries.py`; the ingest default is `'heuristic'`, which is two review quotes truncated at ~120 chars. It is surfaced as `ListingDetail.summary_provenance` because the frontend gates its "AI Review Summary" heading on it — without the flag the UI would claim all 50K summaries are model-written. The backfill re-embeds the rewritten rows into the `summaries` collection using `UUID(listing_id).int >> 64`, the same point id ingestion uses, so the upsert replaces rather than duplicates. Two operational notes: listing detail is cached in Redis for 300s, so entries written before this shipped return `summary_provenance: null` until the TTL expires (harmless — the UI treats anything that is not `'llm'` as heuristic, so it degrades to the honest label); and the run writes Postgres and Qdrant separately, so `summary_embedded_at < updated_at` marks rows whose vector is stale, repairable with `--reembed-only`.
 
 ## Notes and decisions
 

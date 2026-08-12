@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pathlib
+
 import pytest
 
 from app.availability import availability_window, is_available_range
@@ -107,6 +109,7 @@ def _detail_row(**overrides) -> dict:
         "amenities": ["wifi", "kitchen"], "photos": ["photo1.jpg"],
         "host": {"name": "Ana"}, "rating": 4.5, "review_count": 10,
         "neighbourhood_price_pct": 0.5, "summary": "A lovely stay.",
+        "summary_provenance": "heuristic",
         "aspect_avg": {"cleanliness": 0.8},
     }
     row.update(overrides)
@@ -308,6 +311,60 @@ async def test_get_listing_detail_found_populates_cache(monkeypatch: pytest.Monk
     assert detail.id == "l1"
     assert len(detail.availability_window) == 30
     assert set_calls == ["listing:l1"]
+
+
+# ── services.listings: summary provenance (WS0-A) ───────────────────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provenance", ["heuristic", "llm"])
+async def test_listing_detail_surfaces_summary_provenance(
+    monkeypatch: pytest.MonkeyPatch, provenance: str
+):
+    """The frontend keys its "AI Review Summary" heading off this field.
+
+    Only the WS0-A backfilled subset is real synthesis; the rest is two review
+    quotes truncated at ~120 chars. If this stops reaching the client the label
+    silently reverts to claiming all 50K summaries are AI-written.
+    """
+    conn = _FakeConnection(fetchrow_result=_detail_row(summary_provenance=provenance))
+
+    async def _noop_get(key):
+        return None
+
+    async def _noop_set(key, value, ttl=None):
+        pass
+
+    monkeypatch.setattr(listings_service, "cache_get", _noop_get)
+    monkeypatch.setattr(listings_service, "cache_set", _noop_set)
+    monkeypatch.setattr(listings_service, "get_pool", _pool_getter(conn))
+
+    detail = await listings_service.get_listing_detail("l1")
+    assert detail is not None
+    assert detail.summary_provenance == provenance
+
+
+def test_detail_sql_reads_provenance_without_referencing_the_column():
+    """The detail query must not break a database provisioned before WS0-A.
+
+    There is no migration tool in this repo — `ingestion/schema.sql` is applied by
+    ingestion — so production Neon has no `provenance` column until it is
+    re-ingested. A bare `ls.provenance` would make every listing-detail request
+    fail with UndefinedColumn the moment this code deployed. `to_jsonb(ls)->>`
+    yields NULL for an absent key instead, which is also the correct answer: such
+    a database has no LLM summaries either.
+    """
+    sql = listings_service._DETAIL_COLUMNS_SQL
+    assert "to_jsonb(ls) ->> 'provenance' AS summary_provenance" in sql
+    # Strip `--` comments first: the SQL explains itself by naming the thing it
+    # avoids, and matching against that text would pass/fail on prose.
+    code = " ".join(
+        line for line in sql.splitlines() if not line.strip().startswith("--")
+    )
+    assert "ls.provenance" not in code
+
+    schema = pathlib.Path(__file__).resolve().parents[2] / "ingestion" / "schema.sql"
+    if schema.exists():  # not copied into the backend image
+        assert "provenance" in schema.read_text(encoding="utf-8")
 
 
 # ── services.listings: compare — verdict-free vs verdict paths (WS2 req) ────

@@ -1333,16 +1333,22 @@ async def stage_summaries(
             )
             await conn.execute(
                 """
-                INSERT INTO listing_summaries (listing_id, summary, aspect_avg, updated_at)
-                VALUES ($1, $2, $3, now())
+                INSERT INTO listing_summaries
+                    (listing_id, summary, provenance, aspect_avg, updated_at)
+                VALUES ($1, $2, $4, $3, now())
                 ON CONFLICT (listing_id) DO UPDATE
                   SET summary    = EXCLUDED.summary,
+                      -- Must be reset, not left alone: re-ingesting replaces an
+                      -- LLM summary with a heuristic one, and a stale 'llm' here
+                      -- would label extractive quotes as AI-written.
+                      provenance = EXCLUDED.provenance,
                       aspect_avg = EXCLUDED.aspect_avg,
                       updated_at = EXCLUDED.updated_at
                 """,
                 lid,
                 result["summary"],
                 json.dumps(result["aspect_avg"]),
+                "llm" if use_llm else "heuristic",
             )
             done += 1
 

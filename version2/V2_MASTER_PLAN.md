@@ -53,7 +53,7 @@ that gives v2 its framing.
 | v1 "another week" bullet | v2 |
 |---|---|
 | Embed all 200K reviews for per-review semantic search | **Not delivered.** WS0-H wires the *existing* summary vectors — a different, smaller thing. Say so |
-| LLM aspect sentiment + per-property summaries | **Delivered** — WS0-A |
+| LLM aspect sentiment + per-property summaries | **Half delivered** — WS0-A does the summaries (max-evidence subset, `provenance` flag, honest UI label for the rest). Aspect sentiment stays heuristic **on purpose**: it is fed to the answer model as "AGGREGATE ASPECT SCORES", so a model-estimated value would be presented as measured. Do not claim this one as done |
 | Single always-on VM | Not planned |
 | Materialize calendar / `.search` → `query_points` | **Partially** — new code only |
 
@@ -159,17 +159,31 @@ Two blockers the original plan missed:
   `routes: list[str]`, and reuse `_run_search`'s candidate set for `_run_review` rather than
   re-retrieving at `limit=3`.
 
-### WS0-A · LLM per-property summaries — 4h
-Top-N by `review_count` **∪ golden-set ∪ demo listings** (N ≈ 2–5K), `LLM_SUMMARIES=1`,
-offline, re-embed, re-snapshot.
+### WS0-A · LLM per-property summaries — 4h — ✅ DONE 2026-08-12
+`scripts/backfill_summaries.py` (standalone, resumable, `--dry-run`), offline, re-embeds.
+
+> **N is smaller than planned, for a measured reason.** The plan assumed top-N by
+> `review_count` over 2–5K listings. The corpus caps reviews at **10 per listing**
+> (`max(count(*)) = 10`; 1,286 listings sit at the cap), so the ranking saturates and any N
+> beyond that is chosen by UUID tiebreak — i.e. arbitrary. The run targets the 1,286
+> max-evidence listings instead. Note also that `listings.review_count` disagrees with
+> reality (a row reporting 1909 has 3 review rows, FINDINGS §6.7), so the script orders by
+> `count(*)` on `reviews`.
+>
+> **Point ids are integers.** `ingest.py:1204` keys `summaries` by `UUID(lid).int >> 64`.
+> Upserting under the listing_id string does not error — it duplicates every point and
+> leaves the stale vector matching. Verified 50,000 before and after.
 - **Keep the heuristic `aspect_avg`.** `summarize_property(use_llm=True)` overwrites it with
   model-*estimated* scores, and `aspect_avg` is fed to the review agent as "AGGREGATE ASPECT
   SCORES" (`review_intel.py:138-147,198`) — a grounding regression in the most
   grounding-sensitive agent. Take only `summary` from the LLM.
 - Add a `provenance` column ('llm'|'heuristic') to `listing_summaries` — the plan says
   "badge it in the UI" but currently stores nothing to badge with.
-- The LLM summary is uncited generated prose under a sparkle icon. Either make it cite
-  review indices or label it "generated overview".
+- The LLM summary is uncited generated prose under a sparkle icon. **Resolved by labelling:**
+  `summary_provenance` reaches the client, the sparkle panel renders only for `'llm'`, and
+  heuristic rows now say *"What guests said · quoted from reviews"*. That matters more than
+  the backfill itself — a subset backfill shrinks the mislabelled set, it does not fix it,
+  and ~48,700 listings will keep their extractive summaries.
 
 ### WS0-G · Repro + drift — 1.5h
 compose `csvData` volume mount · model name aligned to `gemini-3.1-flash-lite` in

@@ -133,6 +133,9 @@ class ListingDetail(BaseModel):
     neighbourhood_price_pct: float | None = None
     # Precomputed summary (from listing_summaries table — may be null while ingestion runs)
     summary: str | None = None
+    # "llm" = genuinely model-written; "heuristic" = two extractive review
+    # quotes. The frontend must not call the second one AI-generated.
+    summary_provenance: str | None = None
     aspect_avg: dict[str, Any] | None = None
     # 30-day availability calendar preview
     availability_window: list[AvailabilityDay] = Field(default_factory=list)
