@@ -4,8 +4,8 @@ A Booking.com / Airbnb style stays product with a multi-agent concierge undernea
 
 ## Status
 
-v1 (phases 1-6) is built and deployed. **v2 is in progress on the `v2-agentic` branch** and
-is not yet deployed — see [v2 status](#v2--agentic-platform-in-progress) below.
+v1 (phases 1-6) is built and deployed. **v2 is on the `v2-agentic` branch and is deployed
+and verified in production**, except where noted — see [v2 status](#v2--agentic-platform-in-progress).
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -24,21 +24,24 @@ against the same stack; **none of it is deployed yet.**
 
 | Workstream | Scope | Status |
 |---|---|---|
-| WS7 · CI | GitHub Actions: ruff + pytest + docker build, LLM mocked | Written, **never run on GitHub** (nothing pushed) |
+| WS7 · CI | GitHub Actions: ruff + pytest + docker build, LLM mocked | Done — **green on `v2-agentic`** |
 | WS0 · Debt paydown | Review sampler, token accounting, service layer, summary-vector retrieval, area aliases, composite routing, repro/drift fixes | Done, verified live |
 | WS1 · Memory | Traveller + trip memory (mem0), dealbreakers as hard filters, memory panel | Done, verified live |
 | WS0-A · LLM summaries | Per-property LLM summaries for a top-N subset | Not started |
-| WS2 · MCP | Expose the platform as an MCP server; consume an external one | Done, verified live (not deployed) |
-| WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Done, verified live (interrupt survives a container restart) |
+| WS2 · MCP | Expose the platform as an MCP server; consume an external one | Done — server **deployed and verified in production**; the weather client is local-only [by decision](#mcp--both-directions) |
+| WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Done, **deployed** — interrupt survives a container restart |
 | WS4 · Reranking | Cross-encoder rerank, built + measured, **disabled on the free tier** | Done — see [Reranking](#reranking-built-measured-and-turned-off) |
-| WS5/6 | Model benchmark, booking-document OCR | Not started |
+| WS5 · Benchmark | Models × golden queries → cost, latency, accuracy. No LLM judge | Done — see [EVAL.md](./EVAL.md#model-benchmark-ws5) |
+| WS6 · OCR | Booking-document extraction into trip memory | Not started (the plan's designated cut) |
 
-Measured against the 512 MB Render free tier with memory active: **382 MB RSS**, leaving
-~130 MB for WS4's cross-encoder. Gemini calls per turn stay within the ≤4 ceiling
-(3 on `search`, 4 on `review`/`itinerary`/composite) — see
-[backend/README.md](./backend/README.md#memory-ws1).
+Measured against the 512 MB Render free tier with everything exercised (concierge, memory,
+MCP, planner): **479 MB peak RSS** — 33 MB of headroom, which is why reranking ships
+disabled. Gemini calls per turn stay within the ≤4 ceiling (3 on `search`, 4 on
+`review`/`itinerary`/composite) — see [backend/README.md](./backend/README.md#memory-ws1).
 
-Tests: **234 backend** (pytest, LLM mocked, zero quota) and **12 Playwright e2e**.
+Tests: **306 backend** in the full image, **270 in CI** (where the MCP and planner suites
+skip — `fastmcp` and `langgraph` are deliberately not dev dependencies), plus **15
+Playwright e2e**. All LLM-mocked, zero quota.
 
 **Live demo (v1):** frontend at https://travel-discovery-ai.vercel.app, backend at https://travel-discovery-api.onrender.com (API docs at `/docs`). Heads up: the backend is on Render's free tier, so the very first request after it's been idle takes ~40-50s to wake up. After that it's quick. It may already be warm when you try it.
 
@@ -126,7 +129,7 @@ I picked real data because it's more credible and gives the AI layer genuine rev
 ### v2 limitations (memory, `v2-agentic` branch)
 
 - **Identity is a localStorage UUID, not authentication.** Same-browser persistence only: clear site data or switch device and you are a new traveller. Anyone holding the id can read those memories, so nothing sensitive should be stored under one. `DELETE /api/memory/{id}` is deliberately not authorization-bearing.
-- Memory is **not deployed** — it runs locally only. mem0 adds ~117 MB of imports and a second embedding model, both of which are baked into the image rather than fetched at runtime.
+- Memory **is deployed and verified in production** (a dealbreaker set in one turn binds as a hard filter in the next). mem0 adds ~117 MB of imports and a second embedding model, both baked into the image rather than fetched at runtime.
 - The guard that stops remembered text populating hard filters (`city`, dates, budget) is heuristic: it drops a value traceable to memory but not to this turn's request. It fails safe (widens results rather than silently narrowing), but it can drop a value the traveller did state.
 - mem0 pulls the `openai` SDK in as a hard dependency. It is installed but never used — no OpenAI key is configured, and `assert_local_and_gemini()` fails startup loudly if mem0 has silently fallen back to a remote provider.
 
@@ -217,8 +220,9 @@ it**. So: ping only the API, and let weather cold-start and degrade on the 3s ti
 
 ### Known limitations
 
-- **The outbound MCP server is not deployed yet**; it is verified locally. The inbound
-  weather client is local-only *by decision* (see above), not by omission.
+- The outbound MCP server **is deployed and verified in production** (401 on unauthenticated
+  and wrong-token requests, all six tools, real `[r#]` citations). The inbound weather
+  client is local-only *by decision* (see above), not by omission.
 - Open-Meteo's forecast horizon is ~14 days, and `plan_itinerary` defaults to starting
   ~14 days out when the query carries no dates — so the default demo query often gets no
   weather note. Ask for dates within two weeks.

@@ -29,6 +29,10 @@ app/
     │                    # + neighbourhood-level area constraints; ranked + grounded rationale
     ├── review_intel.py  # grounded review synthesis with citations
     └── itinerary.py     # multi-day, multi-property plans
+planner/                 # WS3 LangGraph trip planner
+├── graph.py             # replan cycle, HITL interrupt(), conditional routing
+└── checkpointer.py      # BaseCheckpointSaver over the existing Redis
+rerank.py                # WS4 cross-encoder — lazy, flag-gated, OFF by default
 memory/                  # WS1 traveller + trip memory (mem0)
 ├── store.py             # the ONLY entry point — wraps every mem0 call in
 │                        # asyncio.to_thread; never raises, returns empty on failure
@@ -47,6 +51,9 @@ memory/                  # WS1 traveller + trip memory (mem0)
 | `POST` | `/api/concierge/stream` | Multi-agent concierge over SSE; streams intermediate steps + answer tokens |
 | `POST` | `/api/nl-search` | Parse NL into structured filters for the search bar / chips |
 | `DELETE` | `/api/memory/{id}` | Forget one remembered item (backs the memory panel) |
+| `POST` | `/api/planner/stream` | WS3 LangGraph planner; ends at `done` or `awaiting_input` |
+| `POST` | `/api/planner/resume` | Continue an interrupted plan (approve / adjust) |
+| — | `/mcp` | WS2 MCP server, six tools, bearer auth |
 
 Interactive docs at `/docs` when it's running.
 
@@ -190,8 +197,55 @@ makes no LLM call of its own.
 Write latency is 3.8–7.9s, so the wait is capped at 15s; the cap bounds how long we
 *wait*, not the write, which completes regardless.
 
-Backend RSS with memory active: **382 MB against Render's 512 MB.**
+Backend RSS with everything exercised (concierge, memory, MCP, LangGraph planner):
+**479 MB peak against Render's 512 MB** — 33 MB of headroom, which is why WS4's
+cross-encoder ships disabled (it costs a further +156 MB). Progression: idle 193 MB →
++concierge 406 → +memory 409 → +planner 479.
 
 Both the query embedder and mem0's BM25 sparse encoder are **baked into the image**.
 Fetching them lazily cost ~55s on the first request and overran the memory write cap on
 a cold instance.
+
+
+## Planner (WS3) — the second orchestration approach
+
+`app/planner/` is a LangGraph flow for trip planning, deliberately **not** a port of the
+concierge. The concierge stays on its custom async-generator orchestrator; full reasoning
+in the root README, [Two orchestration approaches](../README.md#two-orchestration-approaches-and-why).
+
+What makes this flow graph-shaped and the concierge's DAG not:
+
+- a **replan cycle** — an empty or over-budget plan relaxes constraints and retries,
+  bounded by `MAX_REPLANS` so an impossible budget cannot loop forever billing LLM calls
+- a **human checkpoint** — `interrupt()` suspends the graph; `POST /api/planner/resume`
+  continues it with approve or adjust
+- a **checkpointer** — state outlives the request, which is the point: the free tier spins
+  the instance down after 15 minutes idle and the trip has to survive that
+
+`checkpointer.py` is a `BaseCheckpointSaver` over the existing Redis rather than
+`langgraph-checkpoint-postgres`, which would pull psycopg alongside asyncpg for a handful
+of small JSON blobs. Reads degrade to "no checkpoint" (starting over beats failing); a
+failed **write** re-raises, because silently dropping it loses the turn on resume. 7-day
+TTL so abandoned threads expire.
+
+Verified by restarting the container between interrupt and resume — the thread resumed in
+the fresh container with the plan intact.
+
+Two things LangGraph does not give for free, both kept: per-node SSE step events on the
+existing event vocabulary, and per-node error guards. `review` is the one deliberately
+unguarded node — `interrupt()` raises a control-flow exception LangGraph must see, and
+catching it would turn the human checkpoint into a silent approval.
+
+## Reranking (WS4) — built, measured, disabled
+
+`app/rerank.py`, lazy and flag-gated (`RERANK_ENABLED=false`). It is off because of the
+RSS figure above, not preference: the smallest supported cross-encoder adds **+156 MB**
+against 33 MB of headroom, and takes 20.8s to load. Reranking 50 documents takes ~1s on
+one vCPU, which also rules it off the streaming path.
+
+`scripts/rerank_eval.py` measures what it would buy without loading the model into the API
+process: **top-10 overlap 3.7/10, top-1 changed in 5 of 6 queries**. A real effect — which
+is what makes disabling it a trade rather than a dismissal.
+
+`rerank_indices()` returns `None` ("no opinion") whenever the flag is off or the model
+fails, so retrieval keeps its existing order rather than degrading.

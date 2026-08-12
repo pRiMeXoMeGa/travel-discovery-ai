@@ -2,7 +2,7 @@
 
 One row per JD section, each pointing at a real file you can open. Anything not
 built yet says so; **no row points at a file that does not exist**, and nothing here
-is aspirational. Status is as of 2026-08-11 on the `v2-agentic` branch.
+is aspirational. Status is as of 2026-08-12 on the `v2-agentic` branch, deployed and verified in production.
 
 > **A note on the grouping.** The job description is not in this repo, so the four
 > sections below are reconstructed from the capability list recorded in
@@ -65,11 +65,11 @@ extract-then-validate shape WS6 would use, minus the OCR front end.
 | Requirement | Where | Status |
 |---|---|---|
 | CI pipeline | `.github/workflows/ci.yml` — ruff + pytest + docker build, pinned actions, Python 3.11 | ✅ **green on `v2-agentic`** (run 31482009729). Note ~23 MCP tests do NOT run there: `test_mcp_server.py` importorskips `fastmcp`, which is deliberately absent from `requirements-dev.txt` |
-| Tests | 273 backend tests locally (249 in CI, where the MCP suite skips); `backend/tests/conftest.py` stubs the heavy deps and blocks network so the suite consumes **zero LLM quota** | ✅ WS7 |
-| E2E | `frontend/e2e/` — 12 Playwright tests against the real restored corpus | ✅ |
+| Tests | **306** backend tests in the full image, **270 in CI** (the MCP and planner suites skip — `fastmcp` and `langgraph` are deliberately not dev deps); `conftest.py` stubs the heavy deps and blocks network, so the suite consumes **zero LLM quota** | ✅ WS7 |
+| E2E | `frontend/e2e/` — **15** Playwright tests against the real restored corpus, including the WS3 interrupt/resume flow | ✅ |
 | Provider/model switching | `backend/app/llm.py` — Gemini and Anthropic behind one module, with `model`/`provider` overrides on all five public functions so a benchmark can switch without restarting the process | ✅ WS0-D |
 | Measured token usage | `llm.py::stream_text_with_usage` + `orchestrator.py` — real `usageMetadata`, tagged `usage_source: measured` vs `estimated`, replacing v1's per-chunk proxy | ✅ WS0-D |
-| Quality eval | `EVAL.md` — golden-query set with manual scoring | ⚠️ **stale**: scored on a different model and before WS0-B/E/H, so it needs re-running, not extending |
+| Quality eval | `EVAL.md` — 11 golden queries re-run against production on 2026-08-12 (avg 4.6/5, was 3.5) | ✅ current |
 | **Automated benchmark harness** (models × golden queries → cost/latency/accuracy) | `scripts/benchmark.py` — intent field-level F1, citation validity against real `reviews.id`, answer entity containment. No LLM judge. | ✅ WS5 — results and recommendation in `EVAL.md` |
 
 ---
