@@ -17,6 +17,13 @@ import {
 import { StarRating } from "@/components/ui/StarRating";
 import { price } from "@/lib/currency";
 import { forgetMemory } from "@/lib/api";
+import {
+  PLANNER_STEP_LABEL,
+  PlanReview,
+  PlannerEvent,
+  resumePlanner,
+  streamPlanner,
+} from "@/lib/planner";
 
 // Friendly labels for the agent step trail. "router" is internal → hidden.
 const STEP_LABEL: Record<string, string> = {
@@ -48,7 +55,19 @@ interface Turn {
   written?: RecalledMemory[];
   /** Ids the user has forgotten this session — hidden optimistically. */
   forgotten?: string[];
+  /** WS3 planner: set when the graph suspended at the human checkpoint. */
+  review?: PlanReview;
+  threadId?: string;
+  /** True once the planner turn has been approved or exhausted its adjustments. */
+  planFinalized?: boolean;
 }
+
+/** Which orchestrator handles the next message.
+ *
+ * Surfaced in the UI rather than auto-detected: the two approaches genuinely
+ * behave differently — the planner can stop and ask — and hiding that behind a
+ * classifier would make the interrupt feel like a bug when it fires. */
+type Mode = "ask" | "plan";
 
 const SUGGESTIONS = [
   "Find me a quiet 1-bedroom in Lisbon near good restaurants for 3 nights in late June, under 130 a night, balcony if possible, and tell me which has the most consistent reviews.",
@@ -465,6 +484,103 @@ function MemorySection({
 }
 
 // ---------------------------------------------------------------------------
+// WS3 planner: the human checkpoint
+// ---------------------------------------------------------------------------
+
+/** Rendered when the graph suspended and is waiting for a decision.
+ *
+ * This is the visible half of the interrupt/resume contract. It has to be
+ * unmistakably a decision point — if it read like an ordinary result the
+ * traveller would never respond and the thread would sit in Redis until its
+ * TTL expired.
+ */
+function PlanReviewCard({
+  review,
+  disabled,
+  onDecide,
+}: {
+  review: PlanReview;
+  disabled: boolean;
+  onDecide: (action: "approve" | "adjust", feedback?: string) => void;
+}) {
+  const [adjusting, setAdjusting] = useState(false);
+  const [feedback, setFeedback] = useState("");
+
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <svg className="w-4 h-4 text-amber-600 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z" />
+        </svg>
+        <p className="text-sm font-semibold text-amber-900">Approve this plan?</p>
+      </div>
+
+      <p className="text-xs text-amber-800">
+        {review.stays} stay{review.stays === 1 ? "" : "s"}
+        {review.total_cost != null && <> · {Math.round(review.total_cost)} total</>}
+        {/* Tri-state on purpose: null means "no budget given, or no plan to
+            assess" — not "within budget". See itinerary.py. */}
+        {review.within_budget === true && <> · within budget</>}
+        {review.within_budget === false && <> · over budget</>}
+      </p>
+
+      {review.notes.length > 0 && (
+        <ul className="text-[11px] text-amber-700 space-y-0.5 list-disc list-inside">
+          {review.notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      )}
+
+      {!adjusting ? (
+        <div className="flex gap-2 pt-0.5">
+          <button
+            onClick={() => onDecide("approve")}
+            disabled={disabled}
+            className="flex-1 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold hover:bg-black disabled:opacity-40 transition-colors"
+          >
+            Approve
+          </button>
+          <button
+            onClick={() => setAdjusting(true)}
+            disabled={disabled}
+            className="flex-1 py-1.5 rounded-lg border border-amber-300 text-amber-900 text-xs font-semibold hover:bg-amber-100 disabled:opacity-40 transition-colors"
+          >
+            Adjust
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-1.5 pt-0.5">
+          <input
+            autoFocus
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="What should change? e.g. somewhere quieter"
+            className="w-full px-2.5 py-1.5 rounded-lg border border-amber-300 text-xs outline-none focus:border-amber-500"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={() => onDecide("adjust", feedback.trim() || undefined)}
+              disabled={disabled}
+              className="flex-1 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold hover:bg-black disabled:opacity-40 transition-colors"
+            >
+              Replan
+            </button>
+            <button
+              onClick={() => setAdjusting(false)}
+              disabled={disabled}
+              className="px-3 py-1.5 rounded-lg border border-amber-300 text-amber-900 text-xs font-semibold hover:bg-amber-100 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
 
@@ -473,6 +589,7 @@ export function ConciergePanel() {
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [mode, setMode] = useState<Mode>("ask");
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -540,6 +657,115 @@ export function ConciergePanel() {
       return next;
     });
   }, []);
+
+  /** Drain a planner stream into the last turn.
+   *
+   * Shared by the initial run and every resume, because the event handling is
+   * identical — only the generator differs. Returns nothing; all state lands
+   * via patchLast.
+   */
+  async function consumePlanner(stream: AsyncGenerator<PlannerEvent>) {
+    for await (const ev of stream) {
+      if (ev.type === "step") {
+        const status = ev.status === "start" ? "running" : (ev.status as StepState["status"]);
+        patchLast((t) => {
+          const steps = [...(t.steps ?? [])];
+          const idx = steps.findIndex((s) => s.agent === ev.agent);
+          if (idx >= 0) steps[idx] = { agent: ev.agent, status };
+          else steps.push({ agent: ev.agent, status });
+          return { ...t, steps };
+        });
+      } else if (ev.type === "data") {
+        patchLast((t) => ({ ...t, plan: ev.plan as ItineraryPlan, swaps: {} }));
+      } else if (ev.type === "awaiting_input") {
+        // Suspended, NOT finished. Keep thread_id — it is the only thing the
+        // client needs to continue, since the rest of the state lives in the
+        // server-side checkpoint.
+        patchLast((t) => ({
+          ...t,
+          review: ev.review,
+          threadId: ev.thread_id,
+          running: false,
+        }));
+      } else if (ev.type === "done") {
+        patchLast((t) => ({
+          ...t,
+          review: undefined,
+          planFinalized: true,
+          running: false,
+          text:
+            t.text ||
+            (ev.decision === "approve"
+              ? "Your itinerary is confirmed."
+              : "Here is the updated itinerary."),
+        }));
+        flushRunningSteps();
+      } else if (ev.type === "error") {
+        patchLast((t) => ({
+          ...t,
+          text: t.text || `Sorry — the planner failed. ${ev.message}`,
+          review: undefined,
+          running: false,
+        }));
+      }
+    }
+  }
+
+  async function sendPlan(q: string) {
+    const query = q.trim();
+    if (!query || running) return;
+    setInput("");
+    setRunning(true);
+    setTurns((prev) => [
+      ...prev,
+      { role: "user", text: query },
+      { role: "assistant", text: "", steps: [], citations: [], running: true },
+    ]);
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    try {
+      await consumePlanner(streamPlanner(query, ctrl.signal));
+    } catch {
+      patchLast((t) => ({
+        ...t,
+        text: t.text || "Sorry — the planner is unavailable.",
+        running: false,
+      }));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  /** Approve or adjust a suspended plan. */
+  const decide = useCallback(
+    async (turnIdx: number, action: "approve" | "adjust", feedback?: string) => {
+      const turn = turns[turnIdx];
+      if (!turn?.threadId || running) return;
+      setRunning(true);
+      setTurns((prev) => {
+        const next = [...prev];
+        // Clear the review immediately so the buttons cannot be double-fired
+        // while the resume stream is opening.
+        next[turnIdx] = { ...next[turnIdx], review: undefined, running: true };
+        return next;
+      });
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      try {
+        await consumePlanner(resumePlanner(turn.threadId, action, feedback, ctrl.signal));
+      } catch {
+        patchLast((t) => ({
+          ...t,
+          text: t.text || "Sorry — could not continue the plan.",
+          running: false,
+        }));
+      } finally {
+        setRunning(false);
+      }
+    },
+    [turns, running],
+  );
 
   async function send(q: string) {
     const query = q.trim();
@@ -682,6 +908,16 @@ export function ConciergePanel() {
                     onForget={(id) => handleForget(turnIdx, id)}
                   />
 
+                  {/* WS3 human checkpoint — above the trail so the decision
+                      is the first thing seen, not buried under node labels. */}
+                  {t.review && (
+                    <PlanReviewCard
+                      review={t.review}
+                      disabled={running}
+                      onDecide={(action, feedback) => decide(turnIdx, action, feedback)}
+                    />
+                  )}
+
                   {/* Agent step trail */}
                   {t.steps && t.steps.length > 0 && (
                     <div className="space-y-1">
@@ -696,7 +932,7 @@ export function ConciergePanel() {
                               <path strokeLinecap="round" strokeLinejoin="round" d="M2 6l3 3 5-5" />
                             </svg>
                           )}
-                          {STEP_LABEL[s.agent] ?? s.agent}
+                          {STEP_LABEL[s.agent] ?? PLANNER_STEP_LABEL[s.agent] ?? s.agent}
                         </div>
                       ))}
                     </div>
@@ -743,20 +979,55 @@ export function ConciergePanel() {
           </div>
 
           <form
-            onSubmit={(e) => { e.preventDefault(); send(input); }}
-            className="flex-shrink-0 border-t border-gray-100 p-3 flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (mode === "plan") sendPlan(input);
+              else send(input);
+            }}
+            className="flex-shrink-0 border-t border-gray-100 p-3 space-y-2"
           >
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask the concierge..."
-              disabled={running}
-              className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-[#e61e4d] focus:ring-2 focus:ring-[#fff0f3] outline-none disabled:bg-gray-50"
-            />
-            <button type="submit" disabled={running || !input.trim()}
-              className="px-4 py-2 rounded-xl bg-[#e61e4d] text-white text-sm font-medium hover:bg-[#c41840] disabled:opacity-40 transition-colors">
-              Send
-            </button>
+            {/* Mode is explicit rather than auto-detected: the planner can stop
+                and ask for a decision, and a classifier silently choosing it
+                would make that interrupt look like a bug. */}
+            <div className="flex gap-1 text-xs" role="group" aria-label="Assistant mode">
+              {(["ask", "plan"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  aria-pressed={mode === m}
+                  className={`px-2.5 py-1 rounded-lg font-medium transition-colors ${
+                    mode === m
+                      ? "bg-gray-900 text-white"
+                      : "bg-gray-100 text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  {m === "ask" ? "Ask" : "Plan a trip"}
+                </button>
+              ))}
+              {mode === "plan" && (
+                <span className="self-center ml-1 text-[11px] text-gray-400">
+                  builds an itinerary you approve before it commits
+                </span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={
+                  mode === "plan"
+                    ? "Describe the trip to plan..."
+                    : "Ask the concierge..."
+                }
+                disabled={running}
+                className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-[#e61e4d] focus:ring-2 focus:ring-[#fff0f3] outline-none disabled:bg-gray-50"
+              />
+              <button type="submit" disabled={running || !input.trim()}
+                className="px-4 py-2 rounded-xl bg-[#e61e4d] text-white text-sm font-medium hover:bg-[#c41840] disabled:opacity-40 transition-colors">
+                Send
+              </button>
+            </div>
           </form>
         </div>
       )}
