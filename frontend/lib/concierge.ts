@@ -92,6 +92,59 @@ export type ConciergeEvent =
   | { type: "done"; trace: unknown }
   | { type: "error"; message: string };
 
+/** Parse an SSE-over-POST body into typed events.
+ *
+ * Extracted so the WS3 planner client can reuse it rather than reimplement the
+ * frame handling — in particular the CR strip, which is load-bearing: uvicorn
+ * emits CRLF line endings, so the real frame boundary is CRLF CRLF, and a
+ * parser that only splits on the LF-LF form silently never fires.
+ *
+ * Behaviour is unchanged from when this lived inside streamConcierge; the
+ * Playwright suite covers it.
+ */
+export async function* parseSseFrames<T>(res: Response): AsyncGenerator<T> {
+  if (!res.body) throw new Error("no response body");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r/g, "");
+
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+        if (!dataLine) continue;
+        try {
+          yield JSON.parse(dataLine.slice(5).trim()) as T;
+        } catch {
+          // ignore malformed frame
+        }
+      }
+    }
+
+    // Stream ended without a trailing blank line — flush what is left.
+    if (buffer.trim()) {
+      const dataLine = buffer.split("\n").find((l) => l.startsWith("data:"));
+      if (dataLine) {
+        try {
+          yield JSON.parse(dataLine.slice(5).trim()) as T;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function* streamConcierge(
   query: string,
   signal?: AbortSignal,
@@ -112,51 +165,8 @@ export async function* streamConcierge(
     const text = await res.text().catch(() => "");
     throw new Error(`concierge request failed: ${res.status} ${text}`);
   }
-  if (!res.body) throw new Error("no response body");
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // SSE frames are separated by a blank line.
-      // The spec uses \n\n but many ASGI servers (e.g. uvicorn) emit \r\n
-      // line endings, making the actual frame boundary \r\n\r\n.
-      // Strip all bare \r so we only deal with \n, then split on \n\n.
-      buffer = buffer.replace(/\r/g, "");
-
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
-        if (!dataLine) continue;
-        try {
-          yield JSON.parse(dataLine.slice(5).trim()) as ConciergeEvent;
-        } catch {
-          // ignore malformed frame
-        }
-      }
-    }
-
-    // Flush any remaining buffer content (stream ended without trailing blank line)
-    if (buffer.trim()) {
-      const dataLine = buffer.split("\n").find((l) => l.startsWith("data:"));
-      if (dataLine) {
-        try {
-          yield JSON.parse(dataLine.slice(5).trim()) as ConciergeEvent;
-        } catch {
-          // ignore
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
+  yield* parseSseFrames<ConciergeEvent>(res);
 }
 
 /** Recompute a plan's total_cost from per-stay costs (used after a swap-out). */
