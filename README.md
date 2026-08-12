@@ -29,7 +29,7 @@ against the same stack; **none of it is deployed yet.**
 | WS1 · Memory | Traveller + trip memory (mem0), dealbreakers as hard filters, memory panel | Done, verified live |
 | WS0-A · LLM summaries | Per-property LLM summaries for a top-N subset | Not started |
 | WS2 · MCP | Expose the platform as an MCP server; consume an external one | Done, verified live (not deployed) |
-| WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Not started |
+| WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Done, verified live (interrupt survives a container restart) |
 | WS4/5/6 | Cross-encoder reranking, model benchmark, booking-document OCR | Not started |
 
 Measured against the 512 MB Render free tier with memory active: **382 MB RSS**, leaving
@@ -92,7 +92,7 @@ Two upfront calls shaped most of this, and both came out of running it on a 4-co
 | Cache | Redis (Upstash free) | Travel queries repeat a lot, so caching retrievals and syntheses pays off |
 | LLM | Gemini 3.1 Flash-Lite over REST, with a Claude Haiku fallback | Cheap, fast, does structured JSON and SSE. I call it over REST because the `google-generativeai` SDK is deprecated |
 | Embeddings | bge-small-en-v1.5 (384-dim), fastembed/ONNX, local | Costs nothing, no torch, fits Render's free 512 MB. Same model at ingest and query time so the vectors share one space |
-| Agent framework | A custom async-generator orchestrator | I wanted first-class SSE step streaming and exact per-step token/latency numbers. For 4 cooperating agents that's lighter than pulling in LangGraph or CrewAI |
+| Agent framework | A custom async-generator orchestrator **and** LangGraph | Two flows, two shapes — see [Two orchestration approaches](#two-orchestration-approaches-and-why) |
 
 ## Why this data
 
@@ -227,6 +227,81 @@ it**. So: ping only the API, and let weather cold-start and degrade on the 3s ti
 - The RPM cap is in-process, matching this app's single-worker assumption. It is not a
   distributed rate limiter.
 
+## Two orchestration approaches, and why
+
+The concierge and the trip planner use different orchestration, deliberately. Picking one
+framework for both would have meant either overhead where it buys nothing, or hand-rolling
+machinery that already exists.
+
+### The concierge: a custom async-generator orchestrator
+
+`backend/app/agents/orchestrator.py`. The route is short and mostly linear — intent, then
+one or more route runners, then an answer. What actually mattered was **first-class SSE
+step streaming** and **exact per-step token and latency accounting**, both of which are a
+few lines in a generator and awkward to retrofit onto a framework's callback model.
+
+It is not a straight line any more — WS0-F made routing composite, so a query asking for
+stays *and* review synthesis runs both pipelines and merges their contexts. But it is still
+a DAG: no cycles, no waiting on a human, no state that has to outlive the request.
+
+### The planner: LangGraph
+
+`backend/app/planner/`. This flow is genuinely graph-shaped, and the concierge's DAG cannot
+express it:
+
+```
+parse ──> plan ──> check_budget ──┬──(unusable, attempts left)──> plan   [CYCLE]
+                                  └──(ok)──> review
+                                               │ interrupt()
+                        ┌──(adjust)──> plan ◄──┤          [CYCLE]
+                        └──────> finalize ◄────┘ (approve)
+```
+
+- **Cycles** — an empty or over-budget plan relaxes constraints and replans, bounded at
+  `MAX_REPLANS` because an unbounded loop on an impossible budget bills LLM calls forever.
+- **A human checkpoint** — `interrupt()` suspends the graph, the traveller approves or
+  adjusts, and `POST /api/planner/resume` continues it.
+- **A checkpointer** — state outlives the request, which is the whole point: Render's free
+  tier spins the instance down after 15 minutes idle, and the trip has to survive that.
+
+Two things LangGraph does not give you free, both kept: **per-node SSE step events** on the
+existing event vocabulary, and **per-node error guards** so a failed node degrades the
+stream instead of killing it — the same contract every concierge agent already honours.
+
+One node is deliberately *not* guarded. `review` calls `interrupt()`, which raises a
+control-flow exception LangGraph itself must see; catching it would turn the human
+checkpoint into a silent approval.
+
+### The checkpointer is Redis, not Postgres
+
+`langgraph-checkpoint-postgres` would pull psycopg alongside the asyncpg this app already
+uses — two Postgres drivers in a 512 MB instance, for a handful of small JSON blobs per
+thread. `backend/app/planner/checkpointer.py` is ~200 lines over the existing Upstash
+client, with a 7-day TTL so abandoned threads expire rather than accumulating.
+
+Reads and writes fail differently, on purpose: an unreadable checkpoint degrades to "no
+checkpoint" (starting the plan over beats failing the request), while a failed **write**
+re-raises, because silently dropping it loses the turn on resume.
+
+**Verified, not assumed:** a plan was interrupted, the container was restarted with
+`docker compose restart backend`, and the thread resumed in the fresh container and
+finalised with the plan intact. That is what the checkpointer buys over the in-memory saver.
+
+### Using it
+
+The concierge panel has an **Ask** / **Plan a trip** toggle. Mode is explicit rather than
+auto-detected: the planner can stop and ask for a decision, and a classifier silently
+routing you there would make that interrupt look like a bug.
+
+### An accident worth keeping
+
+The replan cycle turned out to double as transient-failure recovery. A cold Qdrant client
+throws on its first query; that produces an empty plan, `_needs_replan` treats it as a
+reason to retry, and the third attempt succeeded — the traveller got a real itinerary and
+both failures were recorded in `errors`. That only works because an empty plan reports
+`within_budget: None` rather than `True`; before that fix it looked like success and the
+cycle stopped dead.
+
 ## One-command local run
 
 ```bash
@@ -254,6 +329,7 @@ If you want to rebuild the artifacts yourself, run `bash scripts/export_data.sh`
 | `ingestion/` | Re-runnable real-CSV ingestion pipeline | [ingestion/README.md](./ingestion/README.md) |
 | `backend/app/memory/` | v2 traveller + trip memory (mem0), the only mem0 entry point | [backend/README.md](./backend/README.md#memory-ws1) |
 | `backend/app/mcp_server/` | v2 MCP server — six tools at `/mcp`, bearer auth as ASGI middleware | [MCP section](#mcp--both-directions) |
+| `backend/app/planner/` | v2 LangGraph trip planner — cycles, HITL interrupt, Redis checkpointer | [Orchestration](#two-orchestration-approaches-and-why) |
 | `backend/app/weather.py` | v2 MCP *client* — weather, consumed by the itinerary agent | [MCP section](#mcp--both-directions) |
 | `version2/` | v2 strategy docs + requirement mapping | [`JD_MAPPING.md`](./version2/JD_MAPPING.md), `V2_MASTER_PLAN.md` |
 | `docker-compose.yml` | Full local stack | - |

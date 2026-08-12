@@ -24,14 +24,14 @@ is aspirational. Status is as of 2026-08-11 on the `v2-agentic` branch.
 | **MCP client** (platform consuming a tool) | `backend/app/weather.py` — consumed by `agents/itinerary.py::plan_itinerary`, one call per plan, feeding `plan["notes"]` | ✅ WS2 — **local only by decision**, not deployed (free-tier instance-hours; see `WS2_MCP.md`) |
 | MCP auth + rate limiting | `backend/app/mcp_server/auth.py` — bearer auth as ASGI middleware, failing **closed** when unset; RPM cap on the two LLM-backed tools only | ✅ WS2 |
 | Agent memory | `backend/app/memory/store.py` — traveller + trip scopes via mem0; dealbreakers become hard Qdrant payload filters, not prompt hints | ✅ WS1 |
-| LangGraph planner (cycles, HITL interrupt/resume, checkpointer) | — | ❌ **not built** (WS3) |
+| **LangGraph planner** (cycles, HITL interrupt/resume, checkpointer) | `backend/app/planner/graph.py` — replan cycle bounded at `MAX_REPLANS`, `interrupt()` human checkpoint, conditional routing; `checkpointer.py` — `BaseCheckpointSaver` over the existing Redis. `routers/planner.py` exposes `/api/planner/stream` and `/resume` | ✅ WS3 — interrupt/resume **verified across a container restart** |
 
-**Why the custom orchestrator and not a framework:** v1 needed first-class SSE step
-streaming and exact per-step token/latency accounting for four cooperating agents,
-which is lighter to hand-roll than to retrofit. LangGraph is planned for the *new*
-trip-planner flow specifically because that flow is genuinely graph-shaped
-(budget-exceeded replan cycle, no-availability alternatives cycle, HITL interrupt
-before commit) — not to port work that already functions.
+**Why both, rather than one framework everywhere:** the concierge is a short, mostly
+linear route where what mattered was SSE step streaming and exact per-step token
+accounting — a few lines in a generator, awkward to retrofit onto a framework's callback
+model. The planner has a replan cycle, a human checkpoint and state that must outlive the
+request, which is genuinely graph-shaped. The concierge was **not** ported. Full reasoning
+in the root README, [Two orchestration approaches](../README.md#two-orchestration-approaches-and-why).
 
 ## 2 · RAG with reranking
 
@@ -79,7 +79,11 @@ extract-then-validate shape WS6 would use, minus the OCR front end.
 Sections **1** and **2** are substantially delivered; **4** is delivered except the
 automated benchmark; **3** is not started.
 
-Every remaining gap is one of the four unstarted workstreams — WS3 (LangGraph), WS4
-(reranking), WS5 (benchmark), WS6 (OCR). That is a scheduling fact rather than a technical
-blocker: the enabling work each depends on is done. WS3 and WS5 both needed the service
-layer (`backend/app/services/`), and WS4 needs the fused retrieval path it now has.
+Section 1 is now complete end to end: multi-agent orchestration, composite routing, an MCP
+server AND client, agent memory, and a LangGraph flow with cycles and a human checkpoint.
+
+Every remaining gap is one of the three unstarted workstreams — WS4 (reranking), WS5
+(benchmark), WS6 (OCR). That is a scheduling fact rather than a technical
+blocker: the enabling work each depends on is done. WS5 needs the service layer
+(`backend/app/services/`) and a trustworthy EVAL baseline, both of which now exist, and
+WS4 needs the fused retrieval path it already has.
