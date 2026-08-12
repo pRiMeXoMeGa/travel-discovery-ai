@@ -145,10 +145,44 @@ def _reconcile_nights(segments: list[dict], total: int) -> None:
         segments[-1]["nights"] = max(1, segments[-1]["nights"] + diff)
 
 
+def _is_area_constraint(phrase: str) -> bool:
+    """True for 'near <place>'-style phrases.
+
+    Reuses `retrieval._NEAR_PREFIXES` rather than keeping a second list: the
+    two must agree, because retrieval is what actually resolves these into
+    neighbourhood filters.
+    """
+    low = phrase.lower().strip()
+    return any(low.startswith(p) for p in retrieval._NEAR_PREFIXES)
+
+
 def _segment_query(sq: StructuredQuery, seg: dict) -> StructuredQuery:
-    """Build a per-segment StructuredQuery, merging global + segment constraints."""
+    """Build a per-segment StructuredQuery, merging global + segment constraints.
+
+    Global constraints are merged into every segment EXCEPT area constraints
+    when the segment already has one of its own.
+
+    Why: "one stay near the beach and one near Downtown" makes the intent agent
+    put BOTH phrases in the global `hard_constraints`, and the planner also
+    distributes one into each segment. Merging the globals unconditionally then
+    handed every segment both areas, so each searched the union of Downtown and
+    beach neighbourhoods and which one surfaced was down to ranking. Observed
+    in production: the segment themed "beach stay" returned a Downtown
+    property and vice versa — the areas each resolved correctly, they were just
+    no longer scoped to a segment.
+
+    Non-area globals (amenities, property type, "avoid X") still merge into
+    every segment: those are trip-wide by nature. And a segment with no area
+    constraint of its own still inherits the global ones, so single-segment
+    plans are completely unaffected.
+    """
     seg_hard = list(seg.get("hard_constraints") or [])
-    merged_hard = list(dict.fromkeys([*sq.hard_constraints, *seg_hard]))
+    seg_has_area = any(_is_area_constraint(c) for c in seg_hard)
+    inherited = [
+        c for c in sq.hard_constraints
+        if not (seg_has_area and _is_area_constraint(c))
+    ]
+    merged_hard = list(dict.fromkeys([*inherited, *seg_hard]))
     budget = seg.get("budget_per_night")
     if budget is None:
         budget = sq.budget_per_night

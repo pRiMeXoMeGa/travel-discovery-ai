@@ -22,7 +22,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from app import llm  # noqa: E402
-from app.agents import itinerary  # noqa: E402
+from app.agents import itinerary, retrieval  # noqa: E402
 from app.schemas import ListingCard, StructuredQuery  # noqa: E402
 
 
@@ -246,3 +246,60 @@ def test_chosen_property_is_the_cheapest_within_budget_not_llm_chosen(monkeypatc
     # budget_per_night=100: "expensive" (500) is over budget, "cheap" (50) is not
     # -> deterministic ranking picks "cheap" regardless of its lower rating.
     assert plan["stays"][0]["chosen"]["listing"]["id"] == "cheap"
+
+
+# ── per-segment area scoping (production defect, 2026-08-12) ─────────────────
+
+def test_segment_keeps_its_own_area_and_drops_the_competing_global():
+    """The regression that mattered.
+
+    "one stay near the beach and one near Downtown" puts BOTH phrases in the
+    global hard_constraints, and the planner also distributes one per segment.
+    Merging globals unconditionally gave every segment both areas, so each
+    searched Downtown ∪ beach and which surfaced was ranking luck — observed in
+    production as a "beach stay" segment returning a Downtown property.
+    """
+    sq = StructuredQuery(
+        city="Los Angeles",
+        hard_constraints=["near the beach", "near Downtown", "wifi"],
+    )
+    beach = itinerary._segment_query(sq, {"hard_constraints": ["near the beach"]})
+    downtown = itinerary._segment_query(sq, {"hard_constraints": ["near Downtown"]})
+
+    assert "near the beach" in beach.hard_constraints
+    assert "near Downtown" not in beach.hard_constraints
+
+    assert "near Downtown" in downtown.hard_constraints
+    assert "near the beach" not in downtown.hard_constraints
+
+    # Non-area globals are trip-wide and must still reach every segment.
+    assert "wifi" in beach.hard_constraints
+    assert "wifi" in downtown.hard_constraints
+
+
+def test_segment_without_its_own_area_still_inherits_global_areas():
+    """Single-segment plans and un-distributed constraints are unaffected."""
+    sq = StructuredQuery(city="Lisbon", hard_constraints=["near the centre", "balcony"])
+    seg = itinerary._segment_query(sq, {"hard_constraints": []})
+    assert "near the centre" in seg.hard_constraints
+    assert "balcony" in seg.hard_constraints
+
+
+def test_avoid_constraints_are_never_treated_as_segment_areas():
+    """'avoid X' is trip-wide — it must reach a segment that has its own area."""
+    sq = StructuredQuery(
+        city="Amsterdam",
+        hard_constraints=["avoid de pijp", "near the centre"],
+    )
+    seg = itinerary._segment_query(sq, {"hard_constraints": ["near the station"]})
+    assert "avoid de pijp" in seg.hard_constraints
+    assert "near the station" in seg.hard_constraints
+    assert "near the centre" not in seg.hard_constraints
+
+
+def test_area_detection_matches_retrievals_own_prefix_list():
+    """Drift between these two silently breaks the scoping above."""
+    for prefix in retrieval._NEAR_PREFIXES:
+        assert itinerary._is_area_constraint(prefix + "the beach")
+    assert not itinerary._is_area_constraint("balcony")
+    assert not itinerary._is_area_constraint("avoid de pijp")
