@@ -19,6 +19,9 @@ class SearchFilters(BaseModel):
     property_types: list[str] = Field(default_factory=list)
     amenities: list[str] = Field(default_factory=list)
     sort: Literal["price_asc", "rating", "popularity", "distance"] = "popularity"
+    # EVAL Q4: a family request ranks whole units first. A preference, not a
+    # filter — see build_search_query. Never set from raw user input.
+    prefer_whole_unit: bool = False
     # Reference point for distance sort / "near X".
     near_lat: float | None = None
     near_lng: float | None = None

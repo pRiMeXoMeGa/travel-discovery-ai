@@ -54,7 +54,7 @@ import time
 from datetime import date
 
 from .. import llm
-from ..agents.retrieval import _parse_constraints
+from ..agents.retrieval import _NOT_WHOLE_UNIT, _parse_constraints, _prefers_whole_unit
 from ..availability import availability_window, is_available_range
 from ..cache import cache_get, cache_set
 from ..db import get_pool
@@ -187,6 +187,19 @@ def build_search_query(filters: SearchFilters) -> tuple[str, list, str, list]:
         )
     else:
         order = "review_count DESC"
+
+    # EVAL Q4: "family-friendly place in Amsterdam …" parsed the vibe correctly
+    # and then returned Private rooms at the top, because nothing mapped the
+    # vibe onto ranking. Demote rooms-in-someone-else's-home below whole units.
+    #
+    # Ordering, not filtering, and deliberately so on THIS surface: /api/nl-search
+    # has no answer agent, so a narrowed result set could not be disclosed to the
+    # traveller (that is EVAL Q6). Silently dropping their options would trade one
+    # honesty bug for a worse one. The type values are module constants, never
+    # user input, so inlining them carries no injection risk.
+    if filters.prefer_whole_unit:
+        not_whole = ", ".join(f"'{t}'" for t in sorted(_NOT_WHOLE_UNIT))
+        order = f"(type IN ({not_whole})) ASC, {order}"
 
     offset = (filters.page - 1) * filters.page_size
     limit_ph = rp(filters.page_size)
@@ -370,6 +383,11 @@ def apply_constraint_filters(sq: StructuredQuery, filters: SearchFilters) -> Sea
             **filters.model_dump(),
             "amenities": parsed["amenities"],
             "property_types": property_types,
+            # Skipped when the traveller named a type themselves: "a private room
+            # for my family" is a stated constraint and outranks the inference.
+            "prefer_whole_unit": (
+                _prefers_whole_unit(sq) and not parsed["property_type"]
+            ),
         }
     )
 

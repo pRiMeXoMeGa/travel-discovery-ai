@@ -101,6 +101,31 @@ _KEY_AMENITY_PRIORITY = [
     "wifi", "pool", "hot_tub", "gym", "parking", "kitchen", "ac",
     "pets_allowed", "balcony", "breakfast_included", "workspace", "bbq",
 ]
+# A family vibe implies a whole unit. EVAL Q4 measured the gap: "family-friendly
+# place in Amsterdam with a pool and kitchen under 250" parsed the vibe correctly
+# and then ranked three Private rooms at the top, because `vibe` was only ever
+# appended to the semantic query text and never influenced ordering.
+#
+# This is a DEMOTION, not a filter. For that query the corpus holds 20 whole units
+# against 5 private rooms, so filtering would have worked here — but it would also
+# silently empty the result set in a city or price band where whole units are
+# scarce, and the over-constrained fallback only fires on ZERO hits, not on "three
+# left". Reordering cannot lose a result.
+_FAMILY_VIBE_WORDS = ("family", "families", "kid", "kids", "child", "children",
+                      "toddler", "baby", "infant")
+# Rooms that are a single room in someone else's home cannot host a family; in
+# this corpus Private rooms average 1.2 beds against 2.7 for whole units.
+_NOT_WHOLE_UNIT = frozenset({"Private room", "Shared room"})
+
+
+def _prefers_whole_unit(sq: StructuredQuery) -> bool:
+    """True when the request reads as a family stay."""
+    text = " ".join(
+        [sq.vibe or "", *(sq.soft_preferences or []), *(sq.hard_constraints or [])]
+    ).lower()
+    return any(w in text for w in _FAMILY_VIBE_WORDS)
+
+
 # Map free-text type words → the real Inside Airbnb room_type values stored in
 # listings.type (and the Qdrant payload). Keep keys lowercase.
 _TYPE_KEYWORDS = {
@@ -970,6 +995,17 @@ async def retrieve(
     ordered = sorted(fused.items(), key=lambda kv: kv[1]["rrf"], reverse=True)
     ordered = ordered[:_MAX_HYDRATE]
     rows = await _hydrate([lid for lid, _ in ordered])
+
+    # EVAL Q4: bias a family request toward whole units. Skipped when the
+    # traveller named a type themselves — "a private room for my family" is a
+    # stated constraint, and overriding it would be worse than the bug.
+    if _prefers_whole_unit(sq) and not parsed["property_type"]:
+        def _not_whole(kv: tuple[str, dict]) -> int:
+            row = rows.get(kv[0])
+            return 1 if row is not None and row["type"] in _NOT_WHOLE_UNIT else 0
+
+        # Python's sort is stable, so relevance order survives inside each group.
+        ordered.sort(key=_not_whole)
 
     results: list[tuple[ListingCard, str]] = []
     for lid, entry in ordered:

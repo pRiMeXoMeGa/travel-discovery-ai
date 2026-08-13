@@ -693,3 +693,70 @@ def test_listing_document_omits_missing_fields():
     doc = rerank_mod.listing_to_document(card)
     assert "None" not in doc
     assert "Quiet Flat" in doc and "Lisbon" in doc
+
+
+# ── EVAL Q4: a family vibe must prefer whole units ──────────────────────────
+
+def test_family_vibe_detected_from_vibe_and_preferences():
+    from app.schemas import StructuredQuery
+
+    assert retrieval._prefers_whole_unit(StructuredQuery(vibe="family-friendly"))
+    assert retrieval._prefers_whole_unit(
+        StructuredQuery(soft_preferences=["good for kids"])
+    )
+    assert retrieval._prefers_whole_unit(
+        StructuredQuery(hard_constraints=["travelling with a toddler"])
+    )
+    # Not every stay is a family stay.
+    assert not retrieval._prefers_whole_unit(StructuredQuery(vibe="quiet"))
+    assert not retrieval._prefers_whole_unit(StructuredQuery(vibe="luxury"))
+    assert not retrieval._prefers_whole_unit(StructuredQuery())
+
+
+def test_whole_unit_bias_demotes_rooms_but_keeps_relevance_order():
+    """Private/Shared rooms sink below whole units; order holds inside each group.
+
+    This is the EVAL Q4 failure: the vibe parsed correctly and then three Private
+    rooms sat at the top because `vibe` only ever reached the semantic query text.
+    """
+    rows = {
+        "a": {"type": "Private room"},
+        "b": {"type": "Entire home/apt"},
+        "c": {"type": "Shared room"},
+        "d": {"type": "Entire home/apt"},
+        "e": {"type": "Hotel room"},
+    }
+    # Descending relevance, worst possible arrangement for a family.
+    ordered = [(k, {"rrf": r}) for k, r in
+               [("a", 0.9), ("c", 0.8), ("b", 0.7), ("e", 0.6), ("d", 0.5)]]
+
+    def _not_whole(kv):
+        row = rows.get(kv[0])
+        return 1 if row is not None and row["type"] in retrieval._NOT_WHOLE_UNIT else 0
+
+    ordered.sort(key=_not_whole)
+    ids = [k for k, _ in ordered]
+
+    assert ids[:3] == ["b", "e", "d"], "whole units and hotel rooms must lead"
+    assert set(ids[3:]) == {"a", "c"}, "private and shared rooms must trail"
+    # Stability: relative order is preserved within each group, so a demotion
+    # never reshuffles relevance — b(0.7) before d(0.5), a(0.9) before c(0.8).
+    assert ids == ["b", "e", "d", "a", "c"]
+
+
+def test_whole_unit_bias_never_drops_a_result():
+    """It reorders; it must not filter.
+
+    Filtering would empty the result set wherever whole units are scarce, and the
+    over-constrained fallback only fires on zero hits — not on "three left".
+    """
+    rows = {k: {"type": "Private room"} for k in "abc"}
+    ordered = [(k, {"rrf": 0.5}) for k in "abc"]
+
+    def _not_whole(kv):
+        row = rows.get(kv[0])
+        return 1 if row is not None and row["type"] in retrieval._NOT_WHOLE_UNIT else 0
+
+    before = {k for k, _ in ordered}
+    ordered.sort(key=_not_whole)
+    assert {k for k, _ in ordered} == before
