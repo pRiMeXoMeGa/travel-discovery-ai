@@ -437,15 +437,34 @@ into retrieval, "near downtown"-style constraints resolve to real neighbourhoods
 composite queries ("find me X **and** tell me what guests say") now run both pipelines
 instead of only one.
 
-## Rough cost per query
+## Cost per query
 
-From a live concierge trace, a multi-agent query is around 800 input and 270 output tokens (intent + itinerary/synthesis + the answer). At Gemini 3.1 Flash-Lite rates (roughly $0.10 / $0.40 per 1M in/out):
+Measured, not estimated. Token counts come from the provider's `usageMetadata` (WS0-D), and
+`scripts/benchmark.py` multiplies them by Google's [published
+rates](https://ai.google.dev/gemini-api/docs/pricing) — $0.25 / $1.50 per 1M in/out for
+`gemini-3.1-flash-lite`, checked 2026-08-13.
 
-- Traditional search/filter: $0 (no LLM, and the query embedding is local).
-- NL search (intent only): about $0.0001 per query.
-- Full concierge query: about $0.0003 to $0.001 per query, and Redis caching pushes repeat queries toward $0.
+| Surface | LLM calls | Measured tokens | Cost |
+|---|---|---|---|
+| Traditional search / filter | 0 | — | **$0** — no LLM, and the query embedding is local |
+| NL search (intent parse only) | 1 | ~1,340 in / ~125 out | **~$0.0005** |
+| Full concierge turn | 3–4 | ~2,100–3,300 in / ~270–480 out | **~$0.0011** |
 
-Per-query cost doesn't depend on corpus size. The one-time cost is the bulk embedding at ingest (~5 hours of CPU for 100K vectors here, or a few pennies of LLM if the enrichments run on a paid tier).
+Repeat queries hit the 300s Redis cache and cost $0. Per-query cost doesn't scale with corpus
+size; the one-time cost is bulk embedding at ingest (~5 hours of CPU for 100K vectors here).
+
+Three earlier numbers here were wrong and are worth naming, because each looked reasonable:
+
+1. **The prices were placeholders** — $0.10 / $0.40, roughly a third of the real rate. They
+   were labelled as placeholders in the script and still ended up quoted as fact.
+2. **The token counts predated measurement.** "Around 800 input tokens" was read off a trace
+   by eye; the intent call alone measures ~1,340.
+3. **The benchmark's `$/turn` was not per-turn.** It summed five intent fixtures and two
+   answer runs, then divided by the two answer runs — so the headline cost moved whenever a
+   fixture was added. It now reports `$/intent` and `$/turn` separately.
+
+Those errors partly cancelled, which is exactly why they survived: the old "$0.0003 to
+$0.001" range still overlapped the truth while every input to it was wrong.
 
 ## Evaluation
 

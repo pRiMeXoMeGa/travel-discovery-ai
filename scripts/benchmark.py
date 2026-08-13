@@ -22,9 +22,11 @@ anyone else. Three stages, each with a mechanical ground truth:
      matters most (an invented listing) without asking anyone's opinion.
 
 COST is derived from MEASURED tokens (`usage_source: "measured"`, WS0-D) times a
-price table — never from an estimate. The prices below are placeholders and are
-printed with the results so they cannot be mistaken for verified figures; set
-them from your provider's current published rates before quoting any number.
+price table — never from an estimate. The table is now set from Google's
+published rates (checked 2026-08-13) rather than placeholders, and is printed
+with every run so a stale number stays visible. Re-check before quoting: the
+original placeholders understated Flash-Lite by ~3x and turned a 1.4x cost gap
+into a claimed 4x one.
 """
 from __future__ import annotations
 
@@ -39,11 +41,18 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/backend")
 
-# ⚠ PLACEHOLDER PRICES — USD per 1M tokens. Verify against current published
-# rates before quoting. Printed in the output so a stale number is visible.
+# USD per 1M tokens. Gemini rates from https://ai.google.dev/gemini-api/docs/pricing
+# (paid tier, text input), checked 2026-08-13. Printed with every run so a stale
+# number is visible rather than silently propagated into a README.
+#
+# These replace placeholders that were 2.5x low on Flash-Lite input and 3.75x low
+# on its output. The published EVAL figures derived from them were wrong in a way
+# that flattered the recommendation, so treat this table as load-bearing.
 PRICES = {
-    "gemini-3.1-flash-lite": {"in": 0.10, "out": 0.40},
+    "gemini-3.1-flash-lite": {"in": 0.25, "out": 1.50},
     "gemini-2.5-flash": {"in": 0.30, "out": 2.50},
+    # ⚠ Anthropic rate NOT re-verified — this model has never been run here
+    # (no ANTHROPIC_API_KEY), so the row is absent from results either way.
     "claude-haiku-4-5-20251001": {"in": 1.00, "out": 5.00},
 }
 
@@ -288,6 +297,18 @@ async def run_model(model: str) -> dict:
         "tin": tin, "tout": tout,
         "cost": cost_usd(model, tin, tout),
         "turns": ans_r["runs"],
+        # Per STAGE, because the two are measured over different numbers of
+        # runs. Dividing the combined total by answer turns alone charges every
+        # intent fixture against a turn, so the "cost per turn" moved whenever
+        # someone added a fixture — an artifact of the harness, not the system.
+        "intent_cost": (
+            (cost_usd(model, intent_r["tin"], intent_r["tout"]) or 0) / intent_r["n"]
+            if intent_r["n"] else None
+        ),
+        "turn_cost": (
+            (cost_usd(model, ans_r["tin"], ans_r["tout"]) or 0) / ans_r["runs"]
+            if ans_r["runs"] else None
+        ),
         "lat_n": len(lat_all),
     }
 
@@ -323,20 +344,25 @@ async def main() -> int:
 
     print()
     print(f"{'model':<26} {'intent F1':>9} {'cite ok':>8} {'entity':>7} "
-          f"{'p50 ms':>7} {'p95 ms':>7} {'tok in':>7} {'tok out':>8} {'$/turn':>9}")
+          f"{'p50 ms':>7} {'p95 ms':>7} {'$/intent':>9} {'$/turn':>9}")
     print("-" * 96)
     for r in rows:
-        per_turn = (r["cost"] / r["turns"]) if r["cost"] and r["turns"] else None
+        ic, tc = r.get("intent_cost"), r.get("turn_cost")
         print(f"{r['model']:<26} {r['intent_f1'] * 100:>8.0f}% "
               f"{pct(r['citation_validity']):>8} {pct(r['entity_containment']):>7} "
               f"{r['answer_p50']:>7.0f} {r['answer_p95']:>7.0f} "
-              f"{r['tin']:>7} {r['tout']:>8} "
-              f"{(f'${per_turn:.5f}') if per_turn else 'n/a':>9}")
+              f"{(f'${ic:.5f}') if ic else 'n/a':>9} "
+              f"{(f'${tc:.5f}') if tc else 'n/a':>9}")
     print()
     print("intent F1        field-level, against hand-written expected values")
     print("cite ok          share of returned citations that are real reviews.id rows")
     print("entity           share of property names in the answer found in its context")
-    print("$/turn           MEASURED tokens x the PLACEHOLDER prices in this file -")
+    print("$/intent         one NL-search parse: intent-stage tokens / intent cases")
+    print("$/turn           one full concierge turn: answer-stage tokens / turns")
+    print("                 (these are PER STAGE. An earlier version summed both")
+    print("                  stages and divided by turns alone, which inflated the")
+    print("                  headline cost and moved it whenever a fixture was added)")
+    print("                 MEASURED tokens x the price table in this file -")
     print("                 verify against current published rates before quoting")
     for m, pr in PRICES.items():
         print(f"                 {m}: ${pr['in']}/1M in, ${pr['out']}/1M out")

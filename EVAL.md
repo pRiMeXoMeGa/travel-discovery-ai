@@ -88,27 +88,46 @@ Run: `docker compose exec -T backend python - < scripts/benchmark.py`
 
 ### Results (2026-08-12)
 
-| model | intent F1 | cite ok | entity | p50 ms | p95 ms | tok in | tok out | $/turn |
-|---|---|---|---|---|---|---|---|---|
-| **gemini-3.1-flash-lite** | 100% | 100% | 100% | **3718** | **3724** | 11050 | 1262 | **$0.00080** |
-| gemini-2.5-flash | 100% | 100% | 100% | 7726 | 9816 | 11046 | 1207 | $0.00317 |
+| model | intent F1 | cite ok | entity | p50 ms | p95 ms | $/intent | $/turn |
+|---|---|---|---|---|---|---|---|
+| **gemini-3.1-flash-lite** | 100% | 100% | 100% | **2869** | **3046** | **$0.00050** | **$0.00108** |
+| gemini-2.5-flash | 100% | 100% | 100% | 11078 | 16523 | $0.00066 | $0.00110 |
+
+> **Re-run 2026-08-13, and the cost columns changed meaningfully.** Two defects fed the
+> previous row. The price table was a placeholder at $0.10/$0.40 per 1M against Google's
+> published $0.25/$1.50 for Flash-Lite — understating it ~3x. And `$/turn` was not a
+> per-turn figure at all: it summed five intent fixtures plus two answer runs and divided by
+> the two answer runs, so the number moved whenever a fixture was added. Cost is now reported
+> per stage. The old `tok in` / `tok out` columns were run totals and invited exactly the
+> misreading they got, so they are gone.
 
 Latency is the full concierge turn (retrieval + synthesis + streamed answer), not a raw
-model call. Token counts are **measured** from provider usage metadata, not estimated —
-see WS0-D. Costs multiply those measured tokens by a price table in the script that is
-**placeholder and printed with every run**; verify against current published rates before
-quoting a figure.
+model call. Token counts are **measured** from provider usage metadata, not estimated — see
+WS0-D. Costs multiply those measured tokens by the price table in `scripts/benchmark.py`,
+now set from Google's [published rates](https://ai.google.dev/gemini-api/docs/pricing) and
+checked 2026-08-13 rather than left as placeholders. The table is still printed with every
+run: rates change, and the previous placeholders show how easily a labelled-unverified number
+gets quoted as fact anyway.
 
-### Recommendation: stay on `gemini-3.1-flash-lite`
+### Recommendation: stay on `gemini-3.1-flash-lite` — but for latency, not cost
 
-It matches `gemini-2.5-flash` on every accuracy metric measured, while being **2.1× faster
-at p50** and **~4× cheaper per turn**. On a free-tier box where a cold start already costs
-the first click ~40s, latency is the scarcer resource. Production already runs it — the
-benchmark validates that choice rather than changing it.
+It matches `gemini-2.5-flash` on every accuracy metric measured and is **3.9× faster at p50**
+(2869 vs 11078 ms). On a free-tier box where a cold start already costs the first click ~55s,
+latency is the scarce resource. Production already runs it, so this validates the choice
+rather than changing it.
 
-The p95 gap is wider than p50 (3724 vs 9816 ms), which matters more than the means: the
-slower model is also less predictable, and the SSE stream makes tail latency directly
-visible to the user.
+**The cost argument does not survive correct prices.** At published rates the two models cost
+essentially the same per concierge turn — $0.00108 against $0.00110, a 2% gap. Flash-Lite is
+meaningfully cheaper only on the intent parse ($0.00050 vs $0.00066), because 2.5-flash
+happened to emit fewer output tokens on the answer step and that cancels its higher rate. The
+earlier "~4× cheaper per turn" was an artifact of the placeholder price table, not a
+measurement. Anyone choosing between these two on cost alone should re-measure on their own
+traffic.
+
+Latency is also the less stable of the two signals: an earlier run the same day measured
+3904 vs 5675 ms p50 (1.5×) rather than 3.9×. The direction is consistent across runs, the
+magnitude is not — so treat "faster" as established and any specific multiple as a
+single-run observation.
 
 ### What this does NOT establish
 
