@@ -23,10 +23,10 @@
 # month, which is why the plan allows exactly ONE keep-warm target and why the
 # weather MCP server stays local-only.
 
-# !! NOT ACTIVE YET !!  GitHub schedules workflows from the DEFAULT BRANCH only.
-# This file lives on `v2-agentic`, so neither the cron nor workflow_dispatch fires
-# (dispatch returns 404). It starts working the moment it reaches `main` — no edit
-# needed. Until then the 55.8s cold start is still there.
+# ACTIVE since this reached `main` (2026-08-13). GitHub schedules workflows from
+# the DEFAULT BRANCH only — while this sat on `v2-agentic` neither the cron nor
+# workflow_dispatch fired (dispatch returned 404). First scheduled run: HTTP 200
+# in 0.154s, no spin-down warning.
 
 name: keep-warm
 
