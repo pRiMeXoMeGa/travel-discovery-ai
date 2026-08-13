@@ -84,6 +84,7 @@ export interface ListingDetail {
   review_count: number;
   neighbourhood_price_pct?: number;
   summary?: string;
+  summary_provenance?: string | null;
   aspect_avg?: AspectAvg;
   availability_window: AvailabilityDay[];
 }

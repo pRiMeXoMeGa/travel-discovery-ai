@@ -159,7 +159,10 @@ only. That constraint makes the failure path part of the demo rather than an exc
 
 ---
 
-## WS3 — LangGraph trip planner · ~1 day
+## WS3 — LangGraph trip planner · ~1 day — ✅ DELIVERED
+
+> Shipped: `backend/app/planner/`, `POST /api/planner/{stream,resume}`, Redis checkpointer.
+> Interrupt/resume verified across a **container restart**, and in production.
 
 **Do not port the 4-agent concierge.** v1's rationale for the custom orchestrator is
 correct and stays in the README.
@@ -182,7 +185,14 @@ it uses LangGraph."* Write it down in the README before the interview.
 
 ---
 
-## WS4 — Cross-encoder reranking · ~2–3 hours
+## WS4 — Cross-encoder reranking · ~2–3 hours — ✅ DELIVERED, DISABLED
+
+> Built (`app/rerank.py`) and measured (`scripts/rerank_eval.py`), but ships OFF:
+> +156 MB against 33 MB of headroom on 512 MB. Measured effect if enabled:
+> top-10 overlap 3.7/10, top-1 changed 5/6. NOTE: `TextCrossEncoder` IS in
+> `fastembed==0.4.2` — at `fastembed.rerank.cross_encoder`, not the top level —
+> so no version bump was needed, and none should be made lightly (it risks
+> changing bge-small's output and invalidating all 50K corpus vectors).
 
 Best ratio on the list. The JD says *chunking, embedding, and **reranking***. You have
 two of three.
@@ -206,7 +216,10 @@ never encoded. Fixing the summaries first would raise the ceiling reranking work
 
 ---
 
-## WS5 — Model benchmark harness · ~3 hours
+## WS5 — Model benchmark harness · ~3 hours — ✅ DELIVERED
+
+> `scripts/benchmark.py`; results and recommendation in `EVAL.md`. Both
+> prerequisites noted below were already closed before this started.
 
 The JD asks to *"benchmark models and recommend optimal LLM choices based on cost,
 latency, and accuracy."* You are one script away.
@@ -280,12 +293,14 @@ piece of the plan that improves v1's architecture whether or not the rest ships.
 
 ## Deliverables checklist
 
-- [ ] `version2/JD_MAPPING.md` — four rows, one per JD section, each → a real file path
-- [ ] `version2/img/mcp-claude-desktop.png`
-- [ ] README v2: memory architecture, MCP both directions, both orchestration approaches
-      with rationale, updated trade-offs, updated known limitations, reranking delta,
-      benchmark table, revised cost-per-query, hours spent
-- [ ] `EVAL.md`: memory-aware golden queries, reranking before/after, model benchmark
+- [x] `version2/JD_MAPPING.md` — four rows, one per JD section, each → a real file path
+- [ ] `version2/img/mcp-claude-desktop.png` — **outstanding**, needs Claude Desktop (manual)
+- [x] README v2: memory architecture, MCP both directions, both orchestration approaches
+      with rationale, updated known limitations, reranking delta, benchmark table
+- [ ] revised cost-per-query and hours spent — **outstanding**
+- [x] `EVAL.md`: memory-aware golden queries (11, re-run against production), model
+      benchmark with a recommendation. Reranking before/after is in the README rather
+      than EVAL, since it is an ordering delta rather than a scored query
 
 ## Interview lines
 

@@ -4,8 +4,8 @@ A Booking.com / Airbnb style stays product with a multi-agent concierge undernea
 
 ## Status
 
-v1 (phases 1-6) is built and deployed. **v2 is in progress on the `v2-agentic` branch** and
-is not yet deployed — see [v2 status](#v2--agentic-platform-in-progress) below.
+v1 (phases 1-6) is built and deployed. **v2 is on the `v2-agentic` branch and is deployed
+and verified in production**, except where noted — see [v2 status](#v2--agentic-platform-in-progress).
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -24,20 +24,24 @@ against the same stack; **none of it is deployed yet.**
 
 | Workstream | Scope | Status |
 |---|---|---|
-| WS7 · CI | GitHub Actions: ruff + pytest + docker build, LLM mocked | Written, **never run on GitHub** (nothing pushed) |
+| WS7 · CI | GitHub Actions: ruff + pytest + docker build, LLM mocked | Done — **green on `v2-agentic`** |
 | WS0 · Debt paydown | Review sampler, token accounting, service layer, summary-vector retrieval, area aliases, composite routing, repro/drift fixes | Done, verified live |
 | WS1 · Memory | Traveller + trip memory (mem0), dealbreakers as hard filters, memory panel | Done, verified live |
-| WS0-A · LLM summaries | Per-property LLM summaries for a top-N subset | Not started |
-| WS2 · MCP | Expose the platform as an MCP server; consume an external one | Done, verified live (not deployed) |
-| WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Done, verified live (interrupt survives a container restart) |
-| WS4/5/6 | Cross-encoder reranking, model benchmark, booking-document OCR | Not started |
+| WS0-A · LLM summaries | Real LLM summaries for the max-evidence subset, plus a `provenance` flag so the UI only claims "AI" where it is true | Done — [see below](#the-ai-review-summary) |
+| WS2 · MCP | Expose the platform as an MCP server; consume an external one | Done — server **deployed and verified in production**; the weather client is local-only [by decision](#mcp--both-directions) |
+| WS3 · LangGraph planner | New graph flow with cycles + HITL interrupt/resume | Done, **deployed** — interrupt survives a container restart |
+| WS4 · Reranking | Cross-encoder rerank, built + measured, **disabled on the free tier** | Done — see [Reranking](#reranking-built-measured-and-turned-off) |
+| WS5 · Benchmark | Models × golden queries → cost, latency, accuracy. No LLM judge | Done — see [EVAL.md](./EVAL.md#model-benchmark-ws5) |
+| WS6 · OCR | Booking-document extraction into trip memory | Not started (the plan's designated cut) |
 
-Measured against the 512 MB Render free tier with memory active: **382 MB RSS**, leaving
-~130 MB for WS4's cross-encoder. Gemini calls per turn stay within the ≤4 ceiling
-(3 on `search`, 4 on `review`/`itinerary`/composite) — see
-[backend/README.md](./backend/README.md#memory-ws1).
+Measured against the 512 MB Render free tier with everything exercised (concierge, memory,
+MCP, planner): **479 MB peak RSS** — 33 MB of headroom, which is why reranking ships
+disabled. Gemini calls per turn stay within the ≤4 ceiling (3 on `search`, 4 on
+`review`/`itinerary`/composite) — see [backend/README.md](./backend/README.md#memory-ws1).
 
-Tests: **234 backend** (pytest, LLM mocked, zero quota) and **12 Playwright e2e**.
+Tests: **306 backend** in the full image, **270 in CI** (where the MCP and planner suites
+skip — `fastmcp` and `langgraph` are deliberately not dev dependencies), plus **15
+Playwright e2e**. All LLM-mocked, zero quota.
 
 **Live demo (v1):** frontend at https://travel-discovery-ai.vercel.app, backend at https://travel-discovery-api.onrender.com (API docs at `/docs`). Heads up: the backend is on Render's free tier, so the very first request after it's been idle takes ~40-50s to wake up. After that it's quick. It may already be warm when you try it.
 
@@ -102,6 +106,30 @@ The ingestion pipeline (`ingestion/ingest.py`, and it's re-runnable) parses the 
 
 I picked real data because it's more credible and gives the AI layer genuine review text to work with. These three cities together clear the brief's 50K-listing floor while still fitting the free tiers. Amsterdam (10,480) is the smaller market and Lisbon and LA are the larger ones.
 
+## The "AI Review Summary"
+
+Worth being precise about, because the first version of this was a false claim. Every
+property has a `listing_summaries` row, and the UI used to render all 50,000 of them under a
+sparkle icon labelled **"AI Review Summary"**. They were not AI-generated: the default
+ingest path builds them by concatenating the first ~120 characters of two reviews, which
+routinely truncates mid-word.
+
+Two changes, and both were needed:
+
+- **`scripts/backfill_summaries.py`** writes genuine model summaries and re-embeds those
+  vectors into Qdrant. It runs over the highest-evidence listings — the corpus caps reviews
+  at 10 per property, so ordering by review count saturates at 1,286 listings and there is
+  no point pretending a deeper ranking exists.
+- **`listing_summaries.provenance`** (`'heuristic'` | `'llm'`) reaches the client as
+  `summary_provenance`. The sparkle panel renders only for `'llm'`; everything else is
+  labelled *"What guests said · quoted from reviews"*. So the label is accurate for all
+  50,000 rows regardless of how much of the backfill has run.
+
+The per-review `aspect_avg` scores are deliberately left heuristic even on backfilled rows.
+The review agent feeds them to the answer model under the heading "AGGREGATE ASPECT SCORES",
+so letting the summarizer supply its own numbers would quietly convert a measured value into
+an estimated one presented as measured.
+
 ## Key trade-offs
 
 1. Reviews stay in Postgres full-text instead of being vector-embedded. Embedding 200K real (and often long) review texts on a 4-core CPU is roughly 15 hours, so I embed the listings plus per-property summaries instead (about 100K short vectors, ~5 hours) and serve review search from Postgres full-text. Per-property review retrieval stays fast because it's an indexed `listing_id` slice, so there's no latency hit. The cost is semantic recall (keyword/stemming vs embedding similarity), softened by the per-property summary vectors, the LLM reading the real rows during synthesis, and synonym-expandable `tsquery`. One correction worth recording: for most of v1 the summary vectors did *not* soften anything — the `summaries` collection was built, snapshotted and restored, but no code ever queried it, so a review-theme query fell through to name/keyword matching. Retrieval now searches it alongside the listing vectors and fuses the two by reciprocal rank, so the claim finally holds. The brief's review intelligence is scoped to a property or candidate set, where this basically doesn't bite.
@@ -120,12 +148,12 @@ I picked real data because it's more credible and gives the AI layer genuine rev
 - Calendar availability is synthetic (deterministic), not the real Inside Airbnb calendar.
 - A global review full-text (GIN) index is ~100-200 MB at 200K reviews. That's fine locally, but worth watching on the 0.5 GB free Postgres. Per-property lookups don't even need it.
 - Embedding all 200K reviews would need a GPU, a faster host, or a cloud embedding API (deferred, see trade-off #1).
-- The backend is on Render's free tier, so it spins down after 15 minutes idle (~40-50s cold start on the next request). The keep-warm ping is **not actually configured yet** — an earlier version of this README claimed it was.
+- The backend is on Render's free tier, so it spins down after 15 minutes idle (~40-50s cold start on the next request; measured at 55.8s in EVAL Q1). A keep-warm workflow now exists (`.github/workflows/keep-warm.yml`, pinging `/health` every 10 minutes) but is **not live yet**: GitHub only schedules workflows from the default branch, and it sits on `v2-agentic`. So the cold start is still real. An earlier version of this README claimed the ping was configured when nothing existed at all — the file existing is not the same as it running, and neither is the same as the problem being fixed.
 
 ### v2 limitations (memory, `v2-agentic` branch)
 
 - **Identity is a localStorage UUID, not authentication.** Same-browser persistence only: clear site data or switch device and you are a new traveller. Anyone holding the id can read those memories, so nothing sensitive should be stored under one. `DELETE /api/memory/{id}` is deliberately not authorization-bearing.
-- Memory is **not deployed** — it runs locally only. mem0 adds ~117 MB of imports and a second embedding model, both of which are baked into the image rather than fetched at runtime.
+- Memory **is deployed and verified in production** (a dealbreaker set in one turn binds as a hard filter in the next). mem0 adds ~117 MB of imports and a second embedding model, both baked into the image rather than fetched at runtime.
 - The guard that stops remembered text populating hard filters (`city`, dates, budget) is heuristic: it drops a value traceable to memory but not to this turn's request. It fails safe (widens results rather than silently narrowing), but it can drop a value the traveller did state.
 - mem0 pulls the `openai` SDK in as a hard dependency. It is installed but never used — no OpenAI key is configured, and `assert_local_and_gemini()` fails startup loudly if mem0 has silently fallen back to a remote provider.
 
@@ -216,8 +244,9 @@ it**. So: ping only the API, and let weather cold-start and degrade on the 3s ti
 
 ### Known limitations
 
-- **The outbound MCP server is not deployed yet**; it is verified locally. The inbound
-  weather client is local-only *by decision* (see above), not by omission.
+- The outbound MCP server **is deployed and verified in production** (401 on unauthenticated
+  and wrong-token requests, all six tools, real `[r#]` citations). The inbound weather
+  client is local-only *by decision* (see above), not by omission.
 - Open-Meteo's forecast horizon is ~14 days, and `plan_itinerary` defaults to starting
   ~14 days out when the query carries no dates — so the default demo query often gets no
   weather note. Ask for dates within two weeks.
@@ -302,6 +331,67 @@ both failures were recorded in `errors`. That only works because an empty plan r
 `within_budget: None` rather than `True`; before that fix it looked like success and the
 cycle stopped dead.
 
+## Reranking: built, measured, and turned off
+
+The JD asks for chunking, embedding **and reranking**. This has all three — but reranking
+ships **disabled**, and that is a measurement rather than a preference.
+
+### What it would buy
+
+`scripts/rerank_eval.py` runs the golden queries through retrieval twice, once with the
+bi-encoder ordering and once reranked by an ONNX cross-encoder
+(`Xenova/ms-marco-MiniLM-L-6-v2`), over 50 candidates:
+
+| | result |
+|---|---|
+| top-10 set overlap | **3.7 / 10** |
+| top-1 changed | **5 of 6 queries** |
+| mean displacement in the top 10 | 11.2 positions |
+
+Nearly two-thirds of the visible result set changes. This is a real effect, not a marginal
+reshuffle.
+
+The script deliberately does **not** claim the new order is better. Nothing in it knows the
+ground truth, and inventing one would be worse than measuring nothing — sizing an effect
+and scoring it are different jobs, and the second needs a human against `EVAL.md`'s rubric.
+
+### What it costs, and why it is off
+
+Measured on a fresh instance, exercising each subsystem in turn:
+
+| stage | RSS |
+|---|---|
+| idle | 193 MB |
+| + concierge (loads bge-small) | 406 MB |
+| + memory (mem0 + BM25) | 409 MB |
+| + LangGraph planner | **479 MB** |
+
+That leaves **33 MB of headroom on a 512 MB instance**. The smallest supported
+cross-encoder adds **+156 MB resident** and takes **20.8s** to load — about 635 MB total.
+The instance would be OOM-killed, and the first request to touch it would stall for 20
+seconds.
+
+Latency rules it out of the streaming path independently: **1064 ms to rerank 50
+documents** on one vCPU would put a second of dead air before the first token.
+
+So: `RERANK_ENABLED=false`. Set it true on an instance with ≥1 GB and it lazy-loads on
+first use; `app/rerank.py` returns "no opinion" whenever it is off or fails, so retrieval
+keeps its existing order rather than degrading.
+
+### One bug worth recording
+
+The evaluator initially reported that reranking changed **nothing** — 10/10 overlap across
+every query. That was not the model (a direct test scored four obvious documents correctly
+and well separated); it was a cache bug. `retrieve()` caches by `(query, limit, exclude)`,
+and reranking changes the *order of the cached value*, but the flag was not part of the key
+— so the first run wrote reranked results under the un-reranked key and every later
+"baseline" read them back.
+
+Same shape as an earlier bug where dealbreaker-filtered results were cached without the
+filter in the key: **a cache keyed on less than what determines the value**. The dangerous
+part is the failure mode — it made a working feature look useless, and the plausible-sounding
+conclusion "reranking doesn't help on this corpus" would have been wrong.
+
 ## One-command local run
 
 ```bash
@@ -337,7 +427,7 @@ If you want to rebuild the artifacts yourself, run `bash scripts/export_data.sh`
 ## What I'd do with another week
 
 - Embed all 200K reviews for proper per-review semantic search, on a GPU box or via a cloud embedding API. The only real blocker here was the 4-core CPU.
-- Move aspect sentiment and the per-property summaries to an LLM (or a fine-tuned model) on a paid tier so they work across languages.
+- Finish the LLM summary backfill across all 50,000 properties (the max-evidence subset is done) and move aspect sentiment to an LLM too, on a paid tier, so both work across languages.
 - Move the deployment to a single always-on VM (Oracle Always-Free or a ~€4/mo Hetzner box) running the same `docker-compose`.
 - Materialize the calendar (or add PostGIS) so the availability filter runs before pagination.
 

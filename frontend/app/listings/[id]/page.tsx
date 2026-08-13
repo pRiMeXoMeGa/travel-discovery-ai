@@ -547,7 +547,6 @@ export default function ListingDetailPage() {
   const saved = inWishlist(listing.id);
   const aspects = listing.aspect_avg;
   const hasAspects = aspects && Object.values(aspects).some((v) => v != null);
-
   const aspectLabel: Record<string, string> = {
     cleanliness: "Cleanliness",
     location: "Location",
@@ -562,6 +561,38 @@ export default function ListingDetailPage() {
     if (v < 0) return { bar: "bg-red-400", text: "text-red-600" };
     return { bar: "bg-gray-300", text: "text-gray-500" };
   };
+
+  // Only the backfilled subset is genuine synthesis (WS0-A). Everything else is
+  // extractive quotes, so it gets a different heading rather than a sparkle.
+  const isAiSummary = listing.summary_provenance === "llm";
+  // Aspect scores are heuristic, per-review sentiment in BOTH branches — the LLM
+  // backfill deliberately never overwrites them — so the panel is shared.
+  const aspectPanel = hasAspects ? (
+    <div className="mt-4 grid grid-cols-2 gap-3">
+      {Object.entries(listing.aspect_avg ?? {}).map(([key, val]) => {
+        if (val == null) return null;
+        const colors = aspectColor(val);
+        return (
+          <div key={key} className="flex items-center gap-2">
+            <div className="flex-1">
+              <div className="flex justify-between mb-1">
+                <span className="text-xs text-gray-600">{aspectLabel[key] ?? key}</span>
+                <span className={`text-xs font-semibold ${colors?.text}`}>
+                  {val > 0 ? "Positive" : val < 0 ? "Negative" : "Neutral"}
+                </span>
+              </div>
+              <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${colors?.bar}`}
+                  style={{ width: `${Math.abs(val) * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  ) : null;
 
   return (
     <div className="min-h-screen bg-white pb-16">
@@ -662,8 +693,14 @@ export default function ListingDetailPage() {
               </div>
             </div>
 
-            {/* AI Summary */}
+            {/* Review summary. The heading depends on how the text was actually
+                produced: only `provenance === "llm"` is model-written synthesis.
+                Everything else is `_heuristic_summary` — literally two review
+                quotes truncated at ~120 chars and joined with a semicolon — and
+                calling that "AI Review Summary" was the most visible
+                claim/reality gap in the product (FINDINGS 2.1). */}
             {listing.summary && listing.summary !== "No reviews yet." && (
+              isAiSummary ? (
               <div className="bg-gradient-to-br from-[#fff0f3] to-white rounded-2xl p-5 border border-[#fca5a5]/30">
                 <div className="flex items-center gap-2 mb-3">
                   <div className="w-6 h-6 bg-[#e61e4d] rounded-lg flex items-center justify-center">
@@ -675,33 +712,25 @@ export default function ListingDetailPage() {
                 </div>
                 <p className="text-sm text-gray-700 leading-relaxed">{listing.summary}</p>
 
-                {hasAspects && (
-                  <div className="mt-4 grid grid-cols-2 gap-3">
-                    {Object.entries(listing.aspect_avg ?? {}).map(([key, val]) => {
-                      if (val == null) return null;
-                      const colors = aspectColor(val);
-                      return (
-                        <div key={key} className="flex items-center gap-2">
-                          <div className="flex-1">
-                            <div className="flex justify-between mb-1">
-                              <span className="text-xs text-gray-600">{aspectLabel[key] ?? key}</span>
-                              <span className={`text-xs font-semibold ${colors?.text}`}>
-                                {val > 0 ? "Positive" : val < 0 ? "Negative" : "Neutral"}
-                              </span>
-                            </div>
-                            <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                              <div
-                                className={`h-full rounded-full ${colors?.bar}`}
-                                style={{ width: `${Math.abs(val) * 100}%` }}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                {aspectPanel}
               </div>
+              ) : (
+              <div className="bg-gray-50 rounded-2xl p-5 border border-gray-200">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-6 h-6 bg-gray-400 rounded-lg flex items-center justify-center">
+                    <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h6m-6 8l4-4h6a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2h2v4z" />
+                    </svg>
+                  </div>
+                  <span className="text-sm font-semibold text-gray-700">What guests said</span>
+                  <span className="text-[10px] uppercase tracking-wide text-gray-500 bg-gray-200 rounded px-1.5 py-0.5">
+                    quoted from reviews
+                  </span>
+                </div>
+                <p className="text-sm text-gray-700 leading-relaxed italic">{listing.summary}</p>
+                {aspectPanel}
+              </div>
+              )
             )}
 
             {/* Neighbourhood price context */}

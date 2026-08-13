@@ -28,7 +28,7 @@ if str(_BACKEND) not in sys.path:
 
 from app.agents import retrieval  # noqa: E402
 from app.config import Settings  # noqa: E402
-from app.schemas import StructuredQuery  # noqa: E402
+from app.schemas import ListingCard, StructuredQuery  # noqa: E402
 
 _REPO_ROOT = _BACKEND.parent
 
@@ -634,3 +634,62 @@ def test_over_constrained_search_still_relaxes(wired, monkeypatch):
     assert _values(_conditions(relaxed, "amenities")) == []
     assert _values(_conditions(relaxed, "neighbourhood")) == []
     assert _values(_conditions(relaxed, "city")) == ["Lisbon"]
+
+
+# ── WS4 rerank: cache-key correctness ────────────────────────────────────────
+
+def test_cache_key_changes_when_reranking_is_enabled(monkeypatch):
+    """Reranking changes the ORDER of the cached value, so it must be keyed.
+
+    Found by measurement, not review: scripts/rerank_eval.py reported that
+    reranking moved nothing, because the first run wrote reranked results under
+    the un-reranked key and every later 'baseline' read them straight back.
+    Same shape as the `exclude` bug — a cache keyed on less than determines the
+    value.
+    """
+    from app import rerank as rerank_mod
+
+    sq = StructuredQuery(city="Lisbon")
+    monkeypatch.setattr(rerank_mod, "enabled", lambda: False)
+    off = retrieval._cache_key(sq, 20)
+    monkeypatch.setattr(rerank_mod, "enabled", lambda: True)
+    on = retrieval._cache_key(sq, 20)
+
+    assert off != on
+
+
+def test_cache_key_is_unchanged_when_reranking_is_off(monkeypatch):
+    """Default-off deployments must not have their existing cache invalidated."""
+    from app import rerank as rerank_mod
+
+    monkeypatch.setattr(rerank_mod, "enabled", lambda: False)
+    sq = StructuredQuery(city="Lisbon", budget_per_night=130.0)
+    assert retrieval._cache_key(sq, 20) == retrieval._cache_key(sq, 20)
+
+
+def test_rerank_returns_none_when_disabled(monkeypatch):
+    """None means 'no opinion' — callers keep their existing order."""
+    from app import rerank as rerank_mod
+
+    monkeypatch.setattr(rerank_mod.settings, "rerank_enabled", False)
+    assert rerank_mod.rerank_indices("q", ["a", "b"]) is None
+
+
+def test_rerank_returns_none_on_empty_documents(monkeypatch):
+    from app import rerank as rerank_mod
+
+    monkeypatch.setattr(rerank_mod.settings, "rerank_enabled", True)
+    assert rerank_mod.rerank_indices("q", []) is None
+
+
+def test_listing_document_omits_missing_fields():
+    """A None becoming the literal string 'None' would quietly degrade ranking."""
+    from app import rerank as rerank_mod
+
+    card = ListingCard(
+        id="l1", name="Quiet Flat", type="Entire home/apt", city="Lisbon",
+        neighbourhood=None, lat=1.0, lng=1.0, price_per_night=100.0,
+    )
+    doc = rerank_mod.listing_to_document(card)
+    assert "None" not in doc
+    assert "Quiet Flat" in doc and "Lisbon" in doc

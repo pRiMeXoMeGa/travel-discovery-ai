@@ -50,6 +50,10 @@ CREATE INDEX IF NOT EXISTS idx_reviews_fts ON reviews USING GIN (to_tsvector('si
 CREATE TABLE IF NOT EXISTS listing_summaries (
     listing_id   TEXT PRIMARY KEY REFERENCES listings (id) ON DELETE CASCADE,
     summary      TEXT NOT NULL,
+    -- 'heuristic' = extractive review quotes (the default path); 'llm' = written
+    -- by a model via scripts/backfill_summaries.py. The UI keys its "AI Review
+    -- Summary" heading off this, so it must never be assumed.
+    provenance   TEXT NOT NULL DEFAULT 'heuristic',
     aspect_avg   JSONB,
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );

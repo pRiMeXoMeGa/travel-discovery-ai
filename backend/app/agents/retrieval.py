@@ -31,6 +31,7 @@ from typing import Any
 
 from qdrant_client import models as qmodels
 
+from .. import rerank as rerank_mod
 from ..cache import cache_get, cache_set
 from ..db import get_pool
 from ..embeddings import embed_query
@@ -790,6 +791,18 @@ def _cache_key(sq: StructuredQuery, limit: int, exclude: dict[str, Any] | None =
             "unmapped": sorted(str(u) for u in exclude.get("unmapped") or []),
         }
         suffix += "|" + json.dumps(exclude_norm, sort_keys=True, default=str)
+
+    # WS4: reranking changes the ORDER of the cached value, so it has to be part
+    # of the key. Found the hard way — `scripts/rerank_eval.py` reported that
+    # reranking moved nothing, because the first run had written reranked
+    # results under the un-reranked key and every later "baseline" read them
+    # back. Same failure shape as the `exclude` case above: a cache keyed on
+    # less than what determines the value.
+    #
+    # Only appended when reranking is ON, so the default-off deployment keeps
+    # byte-identical keys and the existing cache is not invalidated.
+    if rerank_mod.enabled():
+        suffix += f"|rr:{settings.rerank_model}"
     return "retrieval:" + hashlib.sha256((raw + suffix).encode()).hexdigest()
 
 
@@ -1001,6 +1014,16 @@ async def retrieve(
             )
         )
 
+    # WS4: cross-encoder reranking. No-op unless RERANK_ENABLED — see
+    # app/rerank.py for why it ships off by default (+156 MB resident against
+    # ~33 MB of headroom, and 1064 ms for 50 documents on one vCPU).
+    #
+    # Applied AFTER hydration so the cross-encoder scores real fields rather
+    # than the embedding text, and BEFORE the cache write so a cached entry and
+    # a fresh one return the same ordering — otherwise the first caller and the
+    # next five minutes of callers get different results for one query.
+    results = _apply_rerank(sq, results, limit)
+
     try:
         await cache_set(
             key,
@@ -1011,3 +1034,23 @@ async def retrieve(
         logger.warning("retrieval cache_set failed: %s", exc)
 
     return results
+
+
+def _apply_rerank(
+    sq: StructuredQuery, results: list[tuple[ListingCard, str]], limit: int
+) -> list[tuple[ListingCard, str]]:
+    """Reorder by cross-encoder, then truncate to `limit`.
+
+    Returns `results` untouched when reranking is off or unavailable — which is
+    the overwhelmingly common path, so this must stay cheap enough to call
+    unconditionally.
+    """
+    if not rerank_mod.enabled() or len(results) < 2:
+        return results[:limit]
+
+    query = _query_text(sq)
+    documents = [rerank_mod.listing_to_document(card, rat) for card, rat in results]
+    order = rerank_mod.rerank_indices(query, documents)
+    if order is None:
+        return results[:limit]
+    return [results[i] for i in order][:limit]

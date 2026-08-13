@@ -24,7 +24,8 @@ components/
 └── ui/                 # StarRating, AmenityBadge
 lib/
 ├── api.ts              # typed REST client (search, listing, reviews, compare, nlSearch)
-├── concierge.ts        # streamConcierge(): SSE-over-POST -> step/data/token/done events
+├── concierge.ts        # streamConcierge() + parseSseFrames(): SSE-over-POST
+├── planner.ts          # WS3 planner client: stream + resume (interrupt/resume)
 ├── identity.ts         # localStorage traveller/trip UUID (v2 memory)
 ├── search-state.ts     # filters <-> URL query-string
 └── wishlist.ts         # localStorage wishlist + compare
@@ -44,7 +45,8 @@ lib/
 - Wishlist plus compare (2-4) with an AI verdict. The backend builds the verdict from parallel per-listing review synthesis and a grounded LLM call, and the matrix still renders if the verdict isn't available.
 - NL search bar (Phase 5): calls `/api/nl-search`, applies the parsed filters, and shows "understood" chips so you can see what it picked up.
 - Concierge (Phase 5): mounted globally so it's reachable from any page. It streams the visible agent steps and a grounded answer, and listing citations click through to the detail page.
-- Memory panel (v2, `v2-agentic` branch): a collapsible section at the top of the concierge slide-over showing which remembered preferences were used, which were learned this turn, and — importantly — which are **enforced as hard filters** versus which are only soft preferences. Each row has a forget button. See "Memory panel" below.
+- Memory panel (v2): a collapsible section at the top of the concierge slide-over showing which remembered preferences were used, which were learned this turn, and — importantly — which are **enforced as hard filters** versus which are only soft preferences. Each row has a forget button. See "Memory panel" below.
+- Trip planner (v2): an **Ask / Plan a trip** toggle. In Plan mode the request goes to the LangGraph planner, which can *stop and ask* — it presents the itinerary and waits for Approve or Adjust before committing. See "Planner" below.
 
 ## Natural-language search: a design note
 
@@ -78,6 +80,23 @@ cd frontend && npm run test:e2e
 npm run test:e2e -- --grep-invert @llm   # skip the specs that spend LLM quota
 ```
 
+**Run these from the host, not from the `frontend` container.** The container is
+`node:20-alpine` and the Dockerfile installs no browsers, so `npx playwright test` inside it
+fails with `Executable doesn't exist` — and `npx playwright install` there does not fix it
+either: Playwright's Chromium is glibc-linked, so on musl it downloads happily and then dies
+with `spawn … ENOENT`. Install browsers once on the host with `npx playwright install
+chromium`.
+
+Two more things that produce failures which look like product bugs but are not:
+
+- **Warm the routes first.** The image runs `npm run dev`, so the first request to each route
+  compiles it on demand (~30s for listing detail) — longer than some assertions allow. `curl`
+  `/`, `/?city=<each city>`, `/wishlist` and one `/listings/{id}` before starting.
+- **Don't run the suite while a heavy job shares the backend container.** Anything running
+  fastembed there (for example `scripts/backfill_summaries.py`) starves the API, and the
+  broadest queries time out first while narrow filtered ones still pass — which reads as a
+  targeted regression rather than load.
+
 Two files, split by cost:
 
 - `booking-surface.spec.ts` — search cards, city switching, the price cap, filter chips, the
@@ -85,8 +104,15 @@ Two files, split by cost:
 - `concierge.spec.ts` — NL search parsing, the streaming concierge (agent step trail,
   grounded answer, itinerary cards) and the v2 memory panel. Tagged `@llm`: each test
   spends free-tier Gemini quota.
+- `planner.spec.ts` — the WS3 human-in-the-loop flow: the run suspends for approval,
+  approve finalises it, adjust replans and comes back for a second decision, and a control
+  asserting **Ask mode is unaffected** by any of it. Tagged `@llm`.
 
-12 tests total.
+15 tests total.
+
+On a **fresh container**, warm the routes first (`/`, `/wishlist`, `/listings/{id}`,
+`/compare`). `next dev` compiles per route on first visit — the listing detail route was
+measured at 31s — and the suite otherwise reports compile latency as test failures.
 
 Assertions target *shape and behaviour* (a price renders, every card obeys the cap, the saved
 listing is the one that comes back) rather than specific listing names, so a re-ingest doesn't
@@ -146,3 +172,24 @@ Two implementation notes for anyone extending it:
 `npm run lint` is defined but ESLint has never been configured, so it drops into an
 interactive setup prompt. CI lints the backend with ruff only, so **the frontend currently
 has no lint coverage.** Typechecking (`npx tsc --noEmit`) and the Playwright suite do run.
+
+## Planner (WS3)
+
+`lib/planner.ts` is a **separate client** from `streamConcierge`, on purpose. The concierge
+assumes one request per turn — open a stream, consume it, done — and the planner breaks
+that structurally: it can suspend at a human checkpoint and be continued later by a second
+request, possibly against a different server process. Overloading the concierge client with
+that would have put a working, e2e-tested path at risk for no gain.
+
+The SSE *frame parsing* is shared (`parseSseFrames`, exported from `lib/concierge.ts`),
+because reimplementing it is how you lose the CR-strip that makes uvicorn's CRLF frames
+parse at all.
+
+- **Mode is explicit, not auto-detected.** A classifier silently routing a query to the
+  planner would make the interrupt look like a bug when it fires.
+- **`awaiting_input` is its own event type**, not a flag on `done`. `done` means the turn
+  is over and the client tears down its stream state; an interrupted run is suspended and
+  the client must hold `thread_id` to continue it.
+- The review card renders `within_budget` as **three** states — within / over / unknown —
+  because an empty plan reports `null`, and showing a green "within budget" badge over zero
+  stays is exactly the bug the backend fix removed.

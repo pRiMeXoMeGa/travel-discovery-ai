@@ -604,14 +604,21 @@ async def summarize_property(
         import json as _json
         raw = await llm_client(prompt)
         parsed = _json.loads(raw)
-        return {
-            "summary": str(parsed.get("summary", "")),
-            "aspect_avg": {
-                k: (float(v) if v is not None else None)
-                for k, v in parsed.get("aspect_avg", {}).items()
-                if k in ("cleanliness", "location", "value", "staff", "noise")
-            },
-        }
+        summary = str(parsed.get("summary", "")).strip()
+        if not summary:
+            return _heuristic_summary(listing_id, reviews)
+        # KEEP THE HEURISTIC aspect_avg. The model is asked for scores above and
+        # they are deliberately discarded: `agents/review_intel.py` feeds
+        # aspect_avg to the answer LLM under the heading "AGGREGATE ASPECT
+        # SCORES", so a model-estimated number would be presented to the user as
+        # measured data. The heuristic scores are computed per-review at ingest
+        # from the actual text, so they trace to something.
+        #
+        # (The prompt still asks for them rather than being rewritten, because
+        # the JSON shape is what the model was tuned against here; dropping the
+        # field changed output quality in testing more than ignoring it does.)
+        heuristic = _heuristic_summary(listing_id, reviews)
+        return {"summary": summary, "aspect_avg": heuristic["aspect_avg"]}
     except Exception:
         return _heuristic_summary(listing_id, reviews)
 

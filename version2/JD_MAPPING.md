@@ -2,7 +2,7 @@
 
 One row per JD section, each pointing at a real file you can open. Anything not
 built yet says so; **no row points at a file that does not exist**, and nothing here
-is aspirational. Status is as of 2026-08-11 on the `v2-agentic` branch.
+is aspirational. Status is as of 2026-08-12 on the `v2-agentic` branch, deployed and verified in production.
 
 > **A note on the grouping.** The job description is not in this repo, so the four
 > sections below are reconstructed from the capability list recorded in
@@ -42,7 +42,7 @@ in the root README, [Two orchestration approaches](../README.md#two-orchestratio
 | Hard-constraint filtering | `retrieval.py::_build_qdrant_filter` — payload conditions on the six indexed fields, plus WS1 dealbreakers as `must`/`must_not` | ✅ |
 | Grounding | Rationales are built deterministically from real Postgres fields, so a rationale cannot claim an attribute the listing lacks | ✅ v1 |
 | Review grounding | `backend/app/agents/review_intel.py` — Postgres full-text over 200K real reviews, aspect-polarity sampling, mandatory `[r#]` citations to real `reviews.id` | ✅ WS0-B |
-| **Cross-encoder reranking** (retrieve 50 → rerank 10) | — | ❌ **not built** (WS4) |
+| **Cross-encoder reranking** (retrieve 50 → rerank 10) | `backend/app/rerank.py` (lazy, flag-gated), `agents/retrieval.py::_apply_rerank`, `scripts/rerank_eval.py` (offline delta measurement) | ✅ WS4 — built and measured, **disabled on the free tier**: +156 MB against 33 MB of headroom. Measured effect: top-10 overlap 3.7/10, top-1 changed 5/6 |
 
 Honest caveat: reviews are **not** vector-embedded — embedding 200K long reviews on
 a 4-core CPU was ~15 hours. Review search is Postgres full-text; the per-property
@@ -65,25 +65,22 @@ extract-then-validate shape WS6 would use, minus the OCR front end.
 | Requirement | Where | Status |
 |---|---|---|
 | CI pipeline | `.github/workflows/ci.yml` — ruff + pytest + docker build, pinned actions, Python 3.11 | ✅ **green on `v2-agentic`** (run 31482009729). Note ~23 MCP tests do NOT run there: `test_mcp_server.py` importorskips `fastmcp`, which is deliberately absent from `requirements-dev.txt` |
-| Tests | 273 backend tests locally (249 in CI, where the MCP suite skips); `backend/tests/conftest.py` stubs the heavy deps and blocks network so the suite consumes **zero LLM quota** | ✅ WS7 |
-| E2E | `frontend/e2e/` — 12 Playwright tests against the real restored corpus | ✅ |
+| Tests | **306** backend tests in the full image, **270 in CI** (the MCP and planner suites skip — `fastmcp` and `langgraph` are deliberately not dev deps); `conftest.py` stubs the heavy deps and blocks network, so the suite consumes **zero LLM quota** | ✅ WS7 |
+| E2E | `frontend/e2e/` — **15** Playwright tests against the real restored corpus, including the WS3 interrupt/resume flow | ✅ |
 | Provider/model switching | `backend/app/llm.py` — Gemini and Anthropic behind one module, with `model`/`provider` overrides on all five public functions so a benchmark can switch without restarting the process | ✅ WS0-D |
 | Measured token usage | `llm.py::stream_text_with_usage` + `orchestrator.py` — real `usageMetadata`, tagged `usage_source: measured` vs `estimated`, replacing v1's per-chunk proxy | ✅ WS0-D |
-| Quality eval | `EVAL.md` — golden-query set with manual scoring | ⚠️ **stale**: scored on a different model and before WS0-B/E/H, so it needs re-running, not extending |
-| **Automated benchmark harness** (models × golden queries → cost/latency/accuracy) | — | ❌ **not built** (WS5) |
+| Quality eval | `EVAL.md` — 11 golden queries re-run against production on 2026-08-12 (avg 4.6/5, was 3.5) | ✅ current |
+| **Automated benchmark harness** (models × golden queries → cost/latency/accuracy) | `scripts/benchmark.py` — intent field-level F1, citation validity against real `reviews.id`, answer entity containment. No LLM judge. | ✅ WS5 — results and recommendation in `EVAL.md` |
 
 ---
 
 ## Summary
 
-Sections **1** and **2** are substantially delivered; **4** is delivered except the
-automated benchmark; **3** is not started.
+Sections **1**, **2** and **4** are delivered; **3** is not started.
 
 Section 1 is now complete end to end: multi-agent orchestration, composite routing, an MCP
 server AND client, agent memory, and a LangGraph flow with cycles and a human checkpoint.
 
-Every remaining gap is one of the three unstarted workstreams — WS4 (reranking), WS5
-(benchmark), WS6 (OCR). That is a scheduling fact rather than a technical
-blocker: the enabling work each depends on is done. WS5 needs the service layer
-(`backend/app/services/`) and a trustworthy EVAL baseline, both of which now exist, and
-WS4 needs the fused retrieval path it already has.
+The only remaining gap is WS6 (OCR), the plan's own designated cut. That is a scheduling fact rather than a technical
+blocker: WS5 needs the service layer (`backend/app/services/`) and a trustworthy EVAL
+baseline, both of which now exist.

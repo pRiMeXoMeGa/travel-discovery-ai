@@ -97,6 +97,54 @@ test.describe("listing detail", () => {
     // Price breakdown / reserve panel is the anchor of the right rail.
     await expect(page.getByText(/night/i).first()).toBeVisible();
   });
+
+  test("summary panel only claims 'AI' when the summary really is AI-written", async ({
+    page,
+  }) => {
+    // The regression this guards is a false claim, not a crash: every listing
+    // has a summary, but only the WS0-A backfilled subset is model-written.
+    // The rest are two review quotes truncated at ~120 chars, and they used to
+    // render under a sparkle icon labelled "AI Review Summary".
+    //
+    // Deliberately ONE city. An earlier version walked three, which made this
+    // the heaviest test in the file (six navigations) and pushed the dev server
+    // into 60s `page.goto` timeouts that surfaced as failures in whichever test
+    // happened to run next. Both provenance branches are covered exhaustively
+    // by test_listing_detail_surfaces_summary_provenance, which is parametrized;
+    // what only a browser can prove is that the rendered heading follows the
+    // flag, and one listing proves that.
+    const detailResponse = page.waitForResponse(
+      (r) => /\/api\/listings\/[0-9a-f-]{36}(\?|$)/.test(r.url()) && r.ok(),
+      { timeout: 60_000 },
+    );
+
+    await page.goto("/?city=Lisbon");
+    await waitForResults(page);
+    await page.locator(CARD_LINK).first().click();
+    await page.waitForURL(/\/listings\/[0-9a-f-]{36}/, { timeout: 60_000 });
+    await expect(page.locator("h1").first()).toBeVisible({ timeout: 30_000 });
+
+    // Read the payload the page already fetched. Issuing our own fetch() would
+    // need the API origin and CORS: the client calls an absolute
+    // NEXT_PUBLIC_API_URL, not a same-origin proxy.
+    const detail = (await (await detailResponse).json()) as {
+      summary?: string;
+      summary_provenance?: string | null;
+    };
+    test.skip(
+      !detail.summary || detail.summary === "No reviews yet.",
+      "listing has no summary to label",
+    );
+
+    const aiLabel = page.getByText("AI Review Summary");
+    if (detail.summary_provenance === "llm") {
+      await expect(aiLabel).toBeVisible();
+    } else {
+      // The direction that matters: a heuristic summary must never be badged AI.
+      await expect(aiLabel).toHaveCount(0);
+      await expect(page.getByText("What guests said")).toBeVisible();
+    }
+  });
 });
 
 test.describe("wishlist and compare", () => {

@@ -382,7 +382,15 @@ SELECT
     l.lat, l.lng, l.base_price, l.beds,
     l.amenities, l.photos, l.host,
     l.rating, l.review_count, l.neighbourhood_price_pct,
-    ls.summary, ls.aspect_avg
+    ls.summary, ls.aspect_avg,
+    -- Deliberately NOT `ls.provenance`. There is no migration tool here — the
+    -- schema is applied by ingestion — so a database provisioned before WS0-A
+    -- has no such column and a direct reference would make every listing-detail
+    -- request fail with UndefinedColumn on deploy. `to_jsonb(row)->>'key'`
+    -- yields NULL for an absent key instead of raising, and NULL is exactly the
+    -- right answer: a database without the column also has no LLM summaries, so
+    -- the UI correctly falls back to the "quoted from reviews" label.
+    to_jsonb(ls) ->> 'provenance' AS summary_provenance
 FROM listings l
 LEFT JOIN listing_summaries ls ON ls.listing_id = l.id
 """
@@ -412,6 +420,10 @@ def _row_to_detail(row, cal: list[dict]) -> ListingDetail:
             else None
         ),
         summary=row["summary"],
+        # WS0-A: the UI labels this "AI Review Summary". Most rows are still
+        # extractive review quotes, so the label needs to know which it has.
+        # Always present in the result set (see the SQL), NULL on an unmigrated DB.
+        summary_provenance=row["summary_provenance"],
         aspect_avg=dict(row["aspect_avg"]) if row["aspect_avg"] else None,
         availability_window=[AvailabilityDay(**d) for d in cal],
     )
