@@ -19,6 +19,9 @@ class SearchFilters(BaseModel):
     property_types: list[str] = Field(default_factory=list)
     amenities: list[str] = Field(default_factory=list)
     sort: Literal["price_asc", "rating", "popularity", "distance"] = "popularity"
+    # EVAL Q4: a family request ranks whole units first. A preference, not a
+    # filter — see build_search_query. Never set from raw user input.
+    prefer_whole_unit: bool = False
     # Reference point for distance sort / "near X".
     near_lat: float | None = None
     near_lng: float | None = None
@@ -87,6 +90,11 @@ class StructuredQuery(BaseModel):
     # Rules the turn revokes ("actually, shared rooms are fine now"). Free text —
     # matched against stored dealbreakers by the store, not used as a filter.
     suppress_dealbreakers: list[str] = Field(default_factory=list)
+    # EVAL Q6: parts of the request no field here can express — "a castle on the
+    # moon" keeps its price cap and silently loses everything else. The concierge
+    # can say so in prose; `/api/nl-search` has no answer agent, so without this
+    # the drop is invisible on that surface. Disclosure only: never a filter.
+    unsupported: list[str] = Field(default_factory=list)
 
 
 class ConciergeRequest(BaseModel):

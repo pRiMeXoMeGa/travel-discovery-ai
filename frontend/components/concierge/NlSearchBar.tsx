@@ -32,6 +32,7 @@ export function NlSearchBar({ onApply }: Props) {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [understood, setUnderstood] = useState<string[] | null>(null);
+  const [unsupported, setUnsupported] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   async function submit(e?: React.FormEvent) {
@@ -44,9 +45,11 @@ export function NlSearchBar({ onApply }: Props) {
       const res = await nlSearch(query);
       onApply({ ...res.filters, page: 1 });
       setUnderstood(summarize(res.understanding));
+      setUnsupported(res.unsupported ?? []);
     } catch {
       setError("Couldn't parse that — try rephrasing.");
       setUnderstood(null);
+      setUnsupported([]);
     } finally {
       setLoading(false);
     }
@@ -88,6 +91,23 @@ export function NlSearchBar({ onApply }: Props) {
               {t}
             </span>
           ))}
+        </div>
+      )}
+      {unsupported.length > 0 && (
+        // The results shown DID ignore part of the request. Saying so is the
+        // whole point (EVAL Q6) — a search that quietly drops "castle" and
+        // returns two cheap flats looks like an answer, not a near-miss.
+        <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-xs">
+          <span className="text-gray-500">Couldn&apos;t apply:</span>
+          {unsupported.map((t, i) => (
+            <span
+              key={i}
+              className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200 line-through"
+            >
+              {t}
+            </span>
+          ))}
+          <span className="text-gray-400">— results ignore this</span>
         </div>
       )}
       {error && <p className="mt-2 text-xs text-red-500">{error}</p>}

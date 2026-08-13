@@ -313,6 +313,71 @@ async def test_get_listing_detail_found_populates_cache(monkeypatch: pytest.Monk
     assert set_calls == ["listing:l1"]
 
 
+# ── services.listings: family vibe prefers whole units (EVAL Q4) ────────────
+
+def test_search_query_demotes_rooms_when_whole_unit_preferred():
+    """The family vibe must reach the ORDER BY, not just the semantic query text.
+
+    EVAL Q4 parsed vibe='family-friendly' correctly and still returned Private
+    rooms at the top, because nothing mapped the vibe onto ranking.
+    """
+    filters = SearchFilters(city="Amsterdam", prefer_whole_unit=True)
+    _, _, rows_sql, _ = listings_service.build_search_query(filters)
+    assert "ORDER BY (type IN ('Private room', 'Shared room')) ASC" in rows_sql
+    # The demotion is a tiebreak layered ON TOP of relevance, not a replacement.
+    assert "review_count DESC" in rows_sql
+
+
+def test_search_query_unchanged_when_not_a_family_request():
+    filters = SearchFilters(city="Amsterdam")
+    _, _, rows_sql, _ = listings_service.build_search_query(filters)
+    assert "type IN (" not in rows_sql
+    assert "ORDER BY review_count DESC" in rows_sql
+
+
+def test_whole_unit_preference_never_becomes_a_where_clause():
+    """It must not filter on this surface.
+
+    /api/nl-search has no answer agent, so a narrowed result set cannot be
+    disclosed (EVAL Q6). Dropping the traveller's options silently would trade
+    one honesty bug for a worse one.
+    """
+    filters = SearchFilters(city="Amsterdam", prefer_whole_unit=True)
+    count_sql, _, rows_sql, _ = listings_service.build_search_query(filters)
+    # Slice the real WHERE clause: everything before ORDER BY still contains the
+    # SELECT column list, which legitimately names `type`.
+    where = rows_sql.split("WHERE", 1)[1].split("ORDER BY")[0]
+    assert "type" not in where, "preference leaked into WHERE — it must only sort"
+    assert "type" not in count_sql, "result COUNT must not shrink"
+
+
+def test_family_vibe_sets_the_preference_but_explicit_type_wins():
+    from app.schemas import StructuredQuery
+
+    base = SearchFilters(city="Amsterdam")
+
+    inferred = listings_service.apply_constraint_filters(
+        StructuredQuery(city="Amsterdam", vibe="family-friendly"), base
+    )
+    assert inferred.prefer_whole_unit is True
+
+    # A stated constraint outranks the inference.
+    stated = listings_service.apply_constraint_filters(
+        StructuredQuery(
+            city="Amsterdam", vibe="family-friendly",
+            hard_constraints=["private room"],
+        ),
+        base,
+    )
+    assert stated.property_types == ["Private room"]
+    assert stated.prefer_whole_unit is False
+
+    neutral = listings_service.apply_constraint_filters(
+        StructuredQuery(city="Amsterdam", vibe="quiet"), base
+    )
+    assert neutral.prefer_whole_unit is False
+
+
 # ── services.listings: summary provenance (WS0-A) ───────────────────────────
 
 @pytest.mark.asyncio
