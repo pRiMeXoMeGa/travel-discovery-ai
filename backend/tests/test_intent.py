@@ -564,3 +564,51 @@ def test_ordinary_fields_still_parse_without_any_dealbreaker_noise(monkeypatch):
     assert sq.vibe == "quiet"
     assert sq.dealbreakers == []
     assert sq.suppress_dealbreakers == []
+
+
+# ── EVAL Q6: disclose what the parse could not represent ────────────────────
+
+def test_clean_unsupported_keeps_genuinely_dropped_fragments():
+    from app.agents.intent import _clean_unsupported
+
+    out = _clean_unsupported(["castle", "on the moon"], {"budget_per_night": 5.0})
+    assert out == ["castle", "on the moon"]
+
+
+def test_clean_unsupported_drops_anything_that_was_actually_applied():
+    """A model over-reporting here would tell the traveller something untrue.
+
+    If a fragment also landed in a real field it WAS applied, so it is not
+    unsupported no matter what the model claimed.
+    """
+    from app.agents.intent import _clean_unsupported
+
+    cleaned = {"city": "Amsterdam", "hard_constraints": ["balcony"], "vibe": "quiet"}
+    out = _clean_unsupported(["Amsterdam", "balcony", "quiet", "helipad"], cleaned)
+    assert out == ["helipad"]
+
+
+def test_clean_unsupported_is_bounded_and_deduped():
+    """A filter chip must not become an essay."""
+    from app.agents.intent import _clean_unsupported
+
+    out = _clean_unsupported(["x" * 400, "dup", "DUP", "a", "b", "c", "d"], {})
+    assert len(out) <= 4
+    assert len(out[0]) <= 60
+    lowered = [o.lower() for o in out]
+    assert len(lowered) == len(set(lowered))
+
+
+def test_clean_unsupported_tolerates_a_bare_string_or_junk():
+    from app.agents.intent import _clean_unsupported
+
+    assert _clean_unsupported("castle", {}) == ["castle"]
+    assert _clean_unsupported(None, {}) == []
+    assert _clean_unsupported(42, {}) == []
+    assert _clean_unsupported([""], {}) == []
+
+
+def test_unsupported_defaults_empty_so_existing_callers_are_unaffected():
+    from app.schemas import StructuredQuery
+
+    assert StructuredQuery().unsupported == []

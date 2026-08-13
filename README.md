@@ -447,8 +447,8 @@ rates](https://ai.google.dev/gemini-api/docs/pricing) — $0.25 / $1.50 per 1M i
 | Surface | LLM calls | Measured tokens | Cost |
 |---|---|---|---|
 | Traditional search / filter | 0 | — | **$0** — no LLM, and the query embedding is local |
-| NL search (intent parse only) | 1 | ~1,340 in / ~125 out | **~$0.0005** |
-| Full concierge turn | 3–4 | ~2,100–3,300 in / ~270–480 out | **~$0.0011** |
+| NL search (intent parse only) | 1 | ~1,520 in / ~130 out | **~$0.0006** |
+| Full concierge turn | 3–4 | ~2,300–3,500 in / ~270–480 out | **~$0.0011** |
 
 Repeat queries hit the 300s Redis cache and cost $0. Per-query cost doesn't scale with corpus
 size; the one-time cost is bulk embedding at ingest (~5 hours of CPU for 100K vectors here).
@@ -465,6 +465,11 @@ Three earlier numbers here were wrong and are worth naming, because each looked 
 
 Those errors partly cancelled, which is exactly why they survived: the old "$0.0003 to
 $0.001" range still overlapped the truth while every input to it was wrong.
+
+These numbers also move when the prompts do, and that is easy to miss. Adding the EVAL Q6
+`unsupported` field to the intent schema pushed the intent call from ~1,340 to ~1,520 input
+tokens (+13%) the same day these figures were first written. Re-run
+`scripts/benchmark.py` after any prompt change rather than trusting the table above.
 
 ## Evaluation
 

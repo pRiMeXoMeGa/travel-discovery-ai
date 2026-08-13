@@ -90,6 +90,11 @@ class StructuredQuery(BaseModel):
     # Rules the turn revokes ("actually, shared rooms are fine now"). Free text —
     # matched against stored dealbreakers by the store, not used as a filter.
     suppress_dealbreakers: list[str] = Field(default_factory=list)
+    # EVAL Q6: parts of the request no field here can express — "a castle on the
+    # moon" keeps its price cap and silently loses everything else. The concierge
+    # can say so in prose; `/api/nl-search` has no answer agent, so without this
+    # the drop is invisible on that surface. Disclosure only: never a filter.
+    unsupported: list[str] = Field(default_factory=list)
 
 
 class ConciergeRequest(BaseModel):

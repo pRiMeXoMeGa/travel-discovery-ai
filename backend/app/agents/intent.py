@@ -65,6 +65,9 @@ _INTENT_SCHEMA = {
     "suppress_dealbreakers": "array of short free-text strings — standing rules "
     "this turn revokes (e.g. 'shared rooms are fine now'). Empty unless the "
     "traveler explicitly walks back a prior standing rule.",
+    "unsupported": "array of short strings — parts of the request this schema "
+    "cannot represent, quoted from the request (e.g. 'castle', 'on the moon'). "
+    "Empty for ordinary requests.",
 }
 
 # Closed vocabulary a dealbreaker `value` must land in — matches the Qdrant
@@ -114,6 +117,15 @@ _SYSTEM = (
     "property type ('entire place','private room','hotel'), and areas to include or "
     "avoid ('near the centre','avoid the airport'). soft_preferences = nice-to-haves.\n"
     "- vibe = overall mood ('quiet','luxury','family-friendly').\n"
+    "- unsupported = the parts of the request you had to DROP because no field "
+    "here can express them: a property kind this catalogue does not have "
+    "('castle', 'treehouse'), a destination that is not a supported city ('on "
+    "the moon'), or any other unfulfillable requirement. Quote the traveler's "
+    "own words, a few words per entry, and list ONLY what was actually dropped "
+    "— anything you captured in a field above is NOT unsupported. This drives an "
+    "honest 'I could not apply X' message, so a false entry tells the traveler "
+    "something untrue about their own search. Empty for ordinary requests, "
+    "which is nearly all of them.\n"
     "- Never invent a city, date, or budget the user did not imply; omit any field "
     "you cannot determine rather than guessing.\n"
     "- dealbreakers vs. hard_constraints: a dealbreaker is a STANDING rule the "
@@ -364,6 +376,39 @@ def _validate_dealbreakers(raw: list) -> list[dict]:
     return out
 
 
+def _clean_unsupported(raw: object, cleaned: dict) -> list[str]:
+    """Keep only short, genuinely-dropped fragments (EVAL Q6).
+
+    This text is shown to the traveller as "I could not apply X", so a wrong
+    entry states something untrue about their own search — a worse failure than
+    the silence it replaces. Two guards, because models over-report on a field
+    like this:
+
+      * anything that also landed in a field WAS applied, so it is not
+        unsupported no matter what the model said;
+      * length and count caps, so a model that decides to explain itself at
+        paragraph length cannot turn a filter chip into an essay.
+    """
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+
+    applied = " ".join(
+        str(v) for k, v in cleaned.items()
+        if k in {"city", "vibe", "hard_constraints", "soft_preferences"} and v
+    ).lower()
+
+    out: list[str] = []
+    for item in raw:
+        text = " ".join(str(item).split())[:60].strip(" .,'\"")
+        if not text or text.lower() in applied:
+            continue
+        if text.lower() not in {o.lower() for o in out}:
+            out.append(text)
+    return out[:4]
+
+
 async def parse_intent(
     query: str,
     today: date | None = None,
@@ -395,7 +440,8 @@ async def parse_intent(
 
     # Normalize before validation: drop nulls, coerce stray scalars to lists.
     cleaned = {k: v for k, v in raw.items() if v is not None}
-    for list_field in ("hard_constraints", "soft_preferences", "suppress_dealbreakers"):
+    for list_field in ("hard_constraints", "soft_preferences", "suppress_dealbreakers",
+                       "unsupported"):
         val = cleaned.get(list_field)
         if isinstance(val, str):
             cleaned[list_field] = [val]
@@ -413,6 +459,8 @@ async def parse_intent(
     # and discards the whole turn's dealbreakers list.
     if "dealbreakers" in cleaned:
         cleaned["dealbreakers"] = _validate_dealbreakers(cleaned["dealbreakers"])
+    if "unsupported" in cleaned:
+        cleaned["unsupported"] = _clean_unsupported(cleaned["unsupported"], cleaned)
 
     try:
         return StructuredQuery(**cleaned)

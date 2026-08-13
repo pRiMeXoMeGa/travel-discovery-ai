@@ -62,4 +62,11 @@ async def nl_search(req: ConciergeRequest) -> dict:
         "understanding": sq.model_dump(mode="json"),
         "filters": filters.model_dump(mode="json"),
         "results": response.model_dump(mode="json"),
+        # EVAL Q6. This surface has no answer agent, so anything the parse could
+        # not represent ("a castle on the moon") was dropped with nothing to say
+        # so: the traveller saw two cheap real listings and no hint that most of
+        # their request had evaporated. Promoted out of `understanding` to the
+        # top level because the UI has to render it, and a field buried in a
+        # debug payload is not a disclosure.
+        "unsupported": sq.unsupported,
     }

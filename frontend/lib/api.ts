@@ -111,6 +111,11 @@ export interface NlSearchResponse {
   understanding: Record<string, unknown>;
   filters: SearchFilters;
   results: SearchResponse;
+  /** Parts of the request that could not be turned into filters, quoted from
+   *  the query ("castle", "on the moon"). This surface has no answer agent, so
+   *  without rendering these the drop is invisible: the traveller just sees a
+   *  short, cheap result list and assumes it answered them. */
+  unsupported?: string[];
 }
 
 export interface CompareResponse {
