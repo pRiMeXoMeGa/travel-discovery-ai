@@ -148,10 +148,15 @@ code changes rather than to the model.
    constraints in the `understanding` payload, or accept the asymmetry and document it.
 3. **Cold-start latency (operational).** Q1 measured **55.8s** — a Render free-tier cold
    start on the first LLM call after idle, not a quality problem. Warm latencies are
-   7–22s. **Now mitigated:** `.github/workflows/keep-warm.yml` pings `/health` every 10
-   minutes against Render's ~15 minute idle timeout. Best-effort rather than a guarantee —
-   GitHub delays `schedule` runs under load — so the workflow emits a warning annotation
-   whenever `/health` takes over 5s, which is the signal that the instance slept anyway.
+   7–22s. **Written but NOT YET ACTIVE.**
+   `.github/workflows/keep-warm.yml` pings `/health` every 10 minutes against Render's ~15
+   minute idle timeout, and both its success and failure paths were run against the live
+   endpoint. But GitHub only schedules workflows from the **default branch**, and this lives
+   on `v2-agentic` — so it fires *nothing* until it reaches `main`. The 55.8s cold start is
+   still real today. Do not read the file's existence as the problem being solved.
+   Once active it is best-effort rather than a guarantee (GitHub delays `schedule` runs under
+   load), which is why the job warns whenever `/health` takes over 5s — a warm instance
+   answers in well under a second, so a slow response is the evidence it slept anyway.
 
 ## Not covered
 

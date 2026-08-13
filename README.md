@@ -148,7 +148,7 @@ an estimated one presented as measured.
 - Calendar availability is synthetic (deterministic), not the real Inside Airbnb calendar.
 - A global review full-text (GIN) index is ~100-200 MB at 200K reviews. That's fine locally, but worth watching on the 0.5 GB free Postgres. Per-property lookups don't even need it.
 - Embedding all 200K reviews would need a GPU, a faster host, or a cloud embedding API (deferred, see trade-off #1).
-- The backend is on Render's free tier, so it spins down after 15 minutes idle (~40-50s cold start on the next request). The keep-warm ping is **not actually configured yet** — an earlier version of this README claimed it was.
+- The backend is on Render's free tier, so it spins down after 15 minutes idle (~40-50s cold start on the next request; measured at 55.8s in EVAL Q1). A keep-warm workflow now exists (`.github/workflows/keep-warm.yml`, pinging `/health` every 10 minutes) but is **not live yet**: GitHub only schedules workflows from the default branch, and it sits on `v2-agentic`. So the cold start is still real. An earlier version of this README claimed the ping was configured when nothing existed at all — the file existing is not the same as it running, and neither is the same as the problem being fixed.
 
 ### v2 limitations (memory, `v2-agentic` branch)
 
