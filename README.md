@@ -19,8 +19,10 @@ and verified in production**, except where noted — see [v2 status](#v2--agenti
 ### v2 — agentic platform (in progress)
 
 v2 makes the platform agentic: it remembers the traveller, calls external tools, and
-exposes itself as a tool other agents can use. Work is on `v2-agentic` and runs locally
-against the same stack; **none of it is deployed yet.**
+exposes itself as a tool other agents can use. It is **merged to `main` and deployed** —
+backend on Render, frontend on Vercel, Neon and Qdrant Cloud behind them. Both hosts build
+the **default branch**, so a push to a feature branch deploys nothing;
+`scripts/prod_smoke.py` verifies the live stack by probing for fields the new code adds.
 
 | Workstream | Scope | Status |
 |---|---|---|
@@ -39,9 +41,14 @@ MCP, planner): **479 MB peak RSS** — 33 MB of headroom, which is why reranking
 disabled. Gemini calls per turn stay within the ≤4 ceiling (3 on `search`, 4 on
 `review`/`itinerary`/composite) — see [backend/README.md](./backend/README.md#memory-ws1).
 
-Tests: **306 backend** in the full image, **270 in CI** (where the MCP and planner suites
-skip — `fastmcp` and `langgraph` are deliberately not dev dependencies), plus **15
-Playwright e2e**. All LLM-mocked, zero quota.
+Tests: **285 backend passing (2 skipped)** in the CI environment — the MCP and planner
+suites skip there because `fastmcp` and `langgraph` are deliberately not dev dependencies —
+plus **16 Playwright e2e**. All LLM-mocked, zero quota. On top of that,
+`scripts/prod_smoke.py` runs ~40 assertions against the **deployed** stack (search, detail
+provenance, NL-search disclosure, concierge routing and citations, itinerary budget, the
+memory dealbreaker chain, injection resistance, MCP auth and all six tools, planner
+interrupt/resume). That one does spend LLM quota, which is why it is a deploy-time check
+rather than part of CI.
 
 **Live demo (v1):** frontend at https://travel-discovery-ai.vercel.app, backend at https://travel-discovery-api.onrender.com (API docs at `/docs`). Heads up: the backend is on Render's free tier, so the very first request after it's been idle takes ~40-50s to wake up. After that it's quick. It may already be warm when you try it.
 

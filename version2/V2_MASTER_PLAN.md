@@ -488,3 +488,34 @@ and the Redis checkpointer is what makes both fit. If that call is ever revisite
 - [ ] WS6: six fields with confidence → trip memory
 - [ ] WS7: CI green, zero quota
 - [ ] README v2 · `JD_MAPPING.md`
+
+## Delivery status — 2026-08-13
+
+Merged to `main` and deployed. Verified end-to-end against the live stack with
+`scripts/prod_smoke.py` (~40 content assertions, not status codes).
+
+| Workstream | State |
+|---|---|
+| WS0 (incl. WS0-A) · debt paydown + LLM summaries | Done, live. 1,286 LLM summaries + `provenance` flag |
+| WS1 · memory | Done, live. Dealbreaker chain verified in production end to end |
+| WS2 · MCP | Done, live. 401 unauthenticated and on a wrong token; all six tools list |
+| WS3 · planner | Done, live. Interrupt reaches `awaiting_input`, resume continues the thread |
+| WS4 · reranking | Built and measured, **off** — +156 MB against 33 MB of headroom |
+| WS5 · benchmark | Done. Per-stage cost, no LLM judge |
+| WS6 · OCR | **Not built** — the plan's designated cut |
+| EVAL Q4 / Q6 | Both fixed and verified live |
+| Keep-warm | Active since reaching `main`; first run HTTP 200 in 0.154s |
+
+Three things this phase taught that the plan did not anticipate:
+
+1. **A push is not a deploy.** Render and Vercel build the default branch. Two changes sat
+   undeployed for hours while looking shipped. Probe for a field the new code adds.
+2. **Placeholder numbers get quoted as fact.** The benchmark price table was labelled
+   PLACEHOLDER *and* printed every run, and still reached two documents as truth —
+   understating cost ~3x and inventing a "4x cheaper" conclusion that did not survive
+   correct prices.
+3. **Free-tier LLM quota is a real constraint on verification.** A day of backfills,
+   benchmarks and end-to-end runs exhausted the daily Gemini allowance, after which every
+   LLM-dependent check fails in a way that mimics a product regression. Budget quota for
+   verification, and re-check a "regression" against quota before believing it.
+

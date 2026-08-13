@@ -173,11 +173,42 @@ code changes rather than to the model.
 
 ## Not covered
 
-- **No automated harness.** Every number here was collected by hand. WS5 is the per-stage,
-  fixed-input, automatable version (intent field-level F1, citation validity, answer entity
-  containment, no LLM judge) — this table is the baseline it should compare against.
-- **No reranking delta.** WS4 is not built, so there is nothing to measure yet.
+- **The 1–5 scores are still hand-assigned.** The measured columns beside them are not:
+  `scripts/benchmark.py` (per-stage, no LLM judge) and `scripts/prod_smoke.py` (end-to-end
+  against the live deployment) are both automatable and both re-runnable. Where a score and
+  a measurement disagree, trust the measurement.
+- **No reranking delta on quality.** WS4 is built and measured for cost/ordering
+  (`scripts/rerank_eval.py`), but nothing here scores whether the reranked order is *better*
+  — that needs human judgement against this rubric, and it is off in production anyway.
 - **Weather MCP** is local-only by decision, so the inbound-MCP path is not represented in
   these production numbers; it appears in the trace as `weather_mcp:error` in Q3, which is
-  the correct degraded behaviour.
-- **No OCR case.** WS6 is not built.
+  the correct degraded behaviour. Verified working locally (`docker compose --profile tools
+  up -d weather-mcp`): real Open-Meteo forecasts at ~1.8–2.3s warm. Note the client's budget
+  is 3s, so even locally the FIRST call after start times out — if it is ever deployed, that
+  timeout needs raising or it will never beat a cold instance.
+- **No OCR case.** WS6 is not built — the plan's designated cut.
+
+## Production end-to-end check
+
+`scripts/prod_smoke.py` exercises the deployed stack and asserts on response **content**,
+never on a 200: health and warmth, search filters, listing detail + `summary_provenance`,
+NL-search parse + Q4 + Q6, concierge routing/citations/measured tokens, itinerary budget,
+the full memory dealbreaker chain, injection resistance, MCP auth + all six tools, and the
+planner interrupt/resume round trip.
+
+Run it after **every merge to `main`** — Render and Vercel build the default branch, so a
+push to a feature branch deploys nothing, and the only reliable way to tell the difference is
+to probe for a field the new code adds.
+
+```bash
+python scripts/prod_smoke.py                        # live deployment
+python scripts/prod_smoke.py --base http://localhost:8000
+```
+
+> **Its first run reported six failures that were all the harness, not the product** — it
+> read `routes` from the event root instead of `done.trace`, expected a `citations`-typed
+> event when citations ride inside a `data` event, and POSTed to `/mcp` which 307-redirects
+> to `/mcp/`. Worse, one memory assertion *passed* vacuously: "0 cards, 0 shared rooms" is
+> trivially true when zero candidates come back. The checks now assert
+> `dealbreakers_applied` is true **and** that results are non-empty, because a dealbreaker
+> that empties the result set is a regression, not a success.
