@@ -1,0 +1,80 @@
+# Keeps the Render free instance from spinning down.
+#
+# Render's free tier suspends a web service after ~15 minutes without traffic,
+# and waking it costs the next visitor a full cold start — measured at **55.8s**
+# on the first LLM call (EVAL.md, Q1). That is the single worst thing anyone
+# clicking the demo will experience, and it is not a code problem, so it gets an
+# infrastructure fix.
+#
+# `/health` returns a static dict: no Postgres, no Qdrant, no LLM. So this wakes
+# the instance without spending Neon compute or Gemini quota.
+#
+# Two things to know before trusting it:
+#
+#  * **GitHub's scheduler is best-effort.** `schedule` runs are delayed under
+#    load, sometimes well past the interval, so a gap long enough for a spin-down
+#    is possible. It is a large improvement, not a guarantee. cron-job.org fires
+#    more punctually if the cold start ever needs to be actually ruled out.
+#  * **GitHub disables cron in a public repo after 60 days without commits.** If
+#    the project goes quiet, this stops silently. Re-enable it in the Actions tab.
+#
+# Cost: the repo is public, so Actions minutes are free. The real cost is
+# Render's — an always-awake service burns ~730 of the 750 free instance-hours a
+# month, which is why the plan allows exactly ONE keep-warm target and why the
+# weather MCP server stays local-only.
+
+name: keep-warm
+
+on:
+  schedule:
+    # Every 10 minutes, against Render's ~15 minute idle timeout. The margin is
+    # deliberate: at */15 any scheduler delay at all lets the instance sleep.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+# Nothing here reads or writes the repo.
+permissions: {}
+
+concurrency:
+  # A delayed run must not pile up behind the next scheduled one.
+  group: keep-warm
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /health
+        env:
+          # Override in Settings → Secrets and variables → Actions → Variables
+          # if the service is ever renamed, rather than editing this file.
+          URL: ${{ vars.KEEPWARM_URL || 'https://travel-discovery-api.onrender.com/health' }}
+        run: |
+          set -u
+          for attempt in 1 2 3; do
+            # --max-time 120 because a cold start is ~56s: a shorter timeout
+            # would abort exactly when the ping is doing its job, and report
+            # failure for the one case it exists to fix.
+            out=$(curl -sS -o /tmp/body -w '%{http_code} %{time_total}' \
+                  --max-time 120 "$URL") && {
+              code=${out% *}; secs=${out#* }
+              echo "attempt $attempt: HTTP $code in ${secs}s"
+              if [ "$code" = "200" ]; then
+                # Latency is the useful signal, not just liveness. A warm
+                # instance answers this in well under a second; multiple seconds
+                # means it had gone to sleep and the schedule is not keeping up.
+                awk -v s="$secs" 'BEGIN { if (s > 5)
+                  print "::warning::/health took " s "s — instance had likely spun down; schedule may be too slow" }'
+                cat /tmp/body; echo
+                exit 0
+              fi
+            }
+            echo "attempt $attempt failed"
+            sleep 15
+          done
+          # Only fail after three tries, so one Render blip does not paint the
+          # repo red — but a genuinely broken ping still surfaces instead of
+          # failing silently for weeks.
+          echo "::error::/health did not return 200 after 3 attempts"
+          exit 1

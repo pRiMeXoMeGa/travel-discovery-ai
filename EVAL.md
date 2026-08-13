@@ -148,7 +148,10 @@ code changes rather than to the model.
    constraints in the `understanding` payload, or accept the asymmetry and document it.
 3. **Cold-start latency (operational).** Q1 measured **55.8s** — a Render free-tier cold
    start on the first LLM call after idle, not a quality problem. Warm latencies are
-   7–22s. The keep-warm ping is still not configured.
+   7–22s. **Now mitigated:** `.github/workflows/keep-warm.yml` pings `/health` every 10
+   minutes against Render's ~15 minute idle timeout. Best-effort rather than a guarantee —
+   GitHub delays `schedule` runs under load — so the workflow emits a warning annotation
+   whenever `/health` takes over 5s, which is the signal that the instance slept anyway.
 
 ## Not covered
 
