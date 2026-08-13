@@ -108,6 +108,34 @@ async def pick_listings(pool, limit: int, min_reviews: int) -> list[tuple[str, i
     return [(r["id"], r["n"]) for r in rows]
 
 
+async def db_retry(fn, tries: int = 4):
+    """Run a DB coroutine factory, retrying transient connection loss.
+
+    A managed Postgres (Neon) drops idle or long-lived connections, and asyncpg
+    surfaces that as ConnectionDoesNotExistError *mid-operation* rather than on
+    acquire. Without this, a single drop 25 minutes into a 1,161-listing run
+    aborts the whole job — which is exactly what happened on the first
+    production attempt. The pool discards the dead connection itself, so simply
+    acquiring again is enough; this only has to survive the gap.
+    """
+    for attempt in range(tries):
+        try:
+            return await fn()
+        except Exception as exc:
+            transient = (
+                "connection" in str(exc).lower()
+                or type(exc).__name__ in {
+                    "ConnectionDoesNotExistError",
+                    "InterfaceError",
+                    "ConnectionResetError",
+                    "TooManyConnectionsError",
+                }
+            )
+            if not transient or attempt == tries - 1:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
+
+
 async def fetch_reviews(pool, listing_id: str, cap: int = 20) -> list[str]:
     async with pool.acquire() as con:
         rows = await con.fetch(
@@ -171,7 +199,12 @@ async def main() -> int:
     pending: list[str] = []
 
     for lid, n in targets:
-        reviews = await fetch_reviews(pool, lid)
+        try:
+            reviews = await db_retry(lambda lid=lid: fetch_reviews(pool, lid))
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            print(f"  DB FAIL {lid}: {type(exc).__name__}"[:110], flush=True)
+            continue
         if not reviews:
             continue
         joined = "\n---\n".join(f"{i + 1}. {r[:400]}" for i, r in enumerate(reviews))
@@ -189,13 +222,21 @@ async def main() -> int:
             failed += 1
             continue
 
-        async with pool.acquire() as con:
-            await con.execute(
-                "UPDATE listing_summaries "
-                "SET summary = $2, provenance = 'llm', updated_at = now() "
-                "WHERE listing_id::text = $1",
-                lid, summary,
-            )
+        async def _write(lid=lid, summary=summary):
+            async with pool.acquire() as con:
+                await con.execute(
+                    "UPDATE listing_summaries "
+                    "SET summary = $2, provenance = 'llm', updated_at = now() "
+                    "WHERE listing_id::text = $1",
+                    lid, summary,
+                )
+
+        try:
+            await db_retry(_write)
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            print(f"  DB FAIL {lid}: {type(exc).__name__}"[:110], flush=True)
+            continue
         updated_ids.append(lid)
         pending.append(lid)
         done += 1
@@ -294,12 +335,15 @@ async def reembed(listing_ids: list[str]) -> int:
         # Stamp THIS batch before starting the next one. Stamping once at the end
         # loses the record of every batch that already succeeded when a later one
         # fails — which is the same all-or-nothing bug this column exists to fix.
-        async with pool.acquire() as con:
-            await con.execute(
-                "UPDATE listing_summaries SET summary_embedded_at = now() "
-                "WHERE listing_id::text = ANY($1::text[])",
-                [r["id"] for r in chunk],
-            )
+        async def _stamp(ids=tuple(r["id"] for r in chunk)):
+            async with pool.acquire() as con:
+                await con.execute(
+                    "UPDATE listing_summaries SET summary_embedded_at = now() "
+                    "WHERE listing_id::text = ANY($1::text[])",
+                    list(ids),
+                )
+
+        await db_retry(_stamp)
         written += len(points)
     return written
 
