@@ -80,6 +80,23 @@ cd frontend && npm run test:e2e
 npm run test:e2e -- --grep-invert @llm   # skip the specs that spend LLM quota
 ```
 
+**Run these from the host, not from the `frontend` container.** The container is
+`node:20-alpine` and the Dockerfile installs no browsers, so `npx playwright test` inside it
+fails with `Executable doesn't exist` — and `npx playwright install` there does not fix it
+either: Playwright's Chromium is glibc-linked, so on musl it downloads happily and then dies
+with `spawn … ENOENT`. Install browsers once on the host with `npx playwright install
+chromium`.
+
+Two more things that produce failures which look like product bugs but are not:
+
+- **Warm the routes first.** The image runs `npm run dev`, so the first request to each route
+  compiles it on demand (~30s for listing detail) — longer than some assertions allow. `curl`
+  `/`, `/?city=<each city>`, `/wishlist` and one `/listings/{id}` before starting.
+- **Don't run the suite while a heavy job shares the backend container.** Anything running
+  fastembed there (for example `scripts/backfill_summaries.py`) starves the API, and the
+  broadest queries time out first while narrow filtered ones still pass — which reads as a
+  targeted regression rather than load.
+
 Two files, split by cost:
 
 - `booking-surface.spec.ts` — search cards, city switching, the price cap, filter chips, the
