@@ -17,6 +17,7 @@ import {
 import { StarRating } from "@/components/ui/StarRating";
 import { price } from "@/lib/currency";
 import { forgetMemory } from "@/lib/api";
+import { Markdown } from "./Markdown";
 import {
   PLANNER_STEP_LABEL,
   PlanReview,
@@ -83,9 +84,35 @@ interface StayCardProps {
   swapIdx: number; // -1 = using original chosen, >= 0 = alternative index in use
   onSwap: (altIdx: number) => void;
   currencyNote: string;
+  /** 1-based position in the journey, for the timeline node. */
+  index: number;
+  /** Suppresses the connecting rail under the final stay. */
+  isLast: boolean;
 }
 
-function StayCard({ stay, swapIdx, onSwap, currencyNote }: StayCardProps) {
+/** "2026-08-17" -> "Mon 17 Aug". ISO dates are precise and unreadable at a
+ *  glance; a trip plan is something a person scans, not parses. */
+function niceDate(iso: string): string {
+  const d = new Date(iso + "T00:00:00");
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+}
+
+/** A small visual cue for the segment's theme. Falls back to a pin, so an
+ *  unrecognised theme degrades to something neutral rather than nothing. */
+function themeIcon(theme?: string | null): string {
+  const t = (theme ?? "").toLowerCase();
+  if (/beach|coast|sea|ocean/.test(t)) return "🏖️";
+  if (/down ?town|centre|center|central|city/.test(t)) return "🏙️";
+  if (/quiet|calm|peace|relax/.test(t)) return "🌿";
+  if (/night|bar|party|vibrant|lively/.test(t)) return "🌃";
+  if (/museum|art|culture|histor/.test(t)) return "🎨";
+  if (/food|restaurant|dining/.test(t)) return "🍽️";
+  if (/park|green|garden/.test(t)) return "🌳";
+  return "📍";
+}
+
+function StayCard({ stay, swapIdx, onSwap, currencyNote, index, isLast }: StayCardProps) {
   const [showAlts, setShowAlts] = useState(false);
 
   const displayedOption = swapIdx >= 0 ? stay.alternatives[swapIdx] : stay.chosen;
@@ -93,18 +120,40 @@ function StayCard({ stay, swapIdx, onSwap, currencyNote }: StayCardProps) {
   const stayLabel = `Nights ${stay.segment}–${stay.segment + stay.nights - 1}`;
 
   return (
-    <div className="rounded-xl border border-gray-100 overflow-hidden bg-white shadow-sm">
+    /* Laid out as a journey rather than a stack of cards: a numbered node and a
+       connecting rail make the ORDER of the trip legible at a glance, which a
+       flat list does not convey. */
+    <div className="relative pl-8">
+      <div
+        aria-hidden
+        className="absolute left-[11px] top-7 bottom-0 w-px bg-gradient-to-b from-[#f9d2da] to-transparent"
+        style={{ display: isLast ? "none" : undefined }}
+      />
+      <div
+        aria-hidden
+        className="absolute left-0 top-1.5 w-[23px] h-[23px] rounded-full bg-[#e61e4d] text-white text-[11px] font-bold flex items-center justify-center shadow-sm ring-4 ring-white"
+      >
+        {index + 1}
+      </div>
+
+      <div className="rounded-xl border border-gray-100 overflow-hidden bg-white shadow-sm">
       {/* Stay header */}
-      <div className="px-3.5 pt-3 pb-2 bg-gray-50 border-b border-gray-100">
-        <div className="flex items-center justify-between">
+      <div className="px-3.5 pt-3 pb-2 bg-gradient-to-r from-[#fff0f3] to-white border-b border-gray-100">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-[#e61e4d]">
             {stayLabel}
           </span>
-          <span className="text-[11px] text-gray-500">
-            {stay.check_in} → {stay.check_out}
+          <span className="text-[10px] font-medium text-gray-500 bg-white/70 border border-gray-200 rounded-full px-2 py-0.5">
+            {stay.nights} night{stay.nights !== 1 ? "s" : ""}
           </span>
         </div>
-        <p className="text-xs font-medium text-gray-700 mt-0.5">{stay.theme}</p>
+        <p className="text-xs font-medium text-gray-700 mt-1 flex items-center gap-1.5">
+          <span aria-hidden>{themeIcon(stay.theme)}</span>
+          {stay.theme}
+        </p>
+        <p className="text-[11px] text-gray-500 mt-0.5">
+          {niceDate(stay.check_in)} → {niceDate(stay.check_out)}
+        </p>
       </div>
 
       {/* Listing */}
@@ -245,6 +294,7 @@ function StayCard({ stay, swapIdx, onSwap, currencyNote }: StayCardProps) {
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -277,11 +327,15 @@ function ItineraryView({ plan, swaps, onSwap }: ItineraryViewProps) {
 
   return (
     <div className="space-y-3">
-      {/* Plan header */}
-      <div className="rounded-xl bg-gray-50 border border-gray-100 px-4 py-3">
+      {/* Plan header — the trip at a glance: where, how long, what it costs,
+          and how much of the budget it uses. */}
+      <div className="rounded-xl bg-gradient-to-br from-[#fff0f3] to-white border border-[#f9d2da]/60 px-4 py-3">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div>
-            <p className="text-xs text-gray-500 uppercase tracking-wide">{plan.city} · {plan.total_nights} nights</p>
+            <p className="text-xs text-gray-500 uppercase tracking-wide flex items-center gap-1.5">
+              <span aria-hidden>✈️</span>
+              {plan.city} · {plan.total_nights} nights · {plan.stays.length} stay{plan.stays.length !== 1 ? "s" : ""}
+            </p>
             <p className="text-base font-bold text-gray-900 mt-0.5">
               {price(currentTotal, plan.city)}
               {hasSwaps && currentTotal !== plan.total_cost && (
@@ -311,6 +365,29 @@ function ItineraryView({ plan, swaps, onSwap }: ItineraryViewProps) {
           </span>
         </div>
 
+        {/* Budget bar. A pill says pass/fail; a bar says HOW MUCH room is left,
+            which is the thing a traveller actually wants when deciding whether
+            to swap a stay for a pricier one. Only shown when a budget exists —
+            a bar with no denominator would be decoration. */}
+        {plan.budget_total != null && plan.budget_total > 0 && (
+          <div className="mt-2.5">
+            <div className="h-1.5 w-full rounded-full bg-white/70 overflow-hidden border border-gray-200/70">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  currentTotal > plan.budget_total ? "bg-amber-500" : "bg-green-500"
+                }`}
+                style={{ width: `${Math.min(100, (currentTotal / plan.budget_total) * 100)}%` }}
+              />
+            </div>
+            <p className="text-[11px] text-gray-500 mt-1">
+              {price(currentTotal, plan.city)} of {price(plan.budget_total, plan.city)}
+              {currentTotal <= plan.budget_total
+                ? ` · ${price(plan.budget_total - currentTotal, plan.city)} left`
+                : ` · ${price(currentTotal - plan.budget_total, plan.city)} over`}
+            </p>
+          </div>
+        )}
+
         {plan.notes.length > 0 && (
           <ul className="mt-2 space-y-1">
             {plan.notes.map((note, ni) => (
@@ -331,6 +408,8 @@ function ItineraryView({ plan, swaps, onSwap }: ItineraryViewProps) {
           swapIdx={swaps[idx] ?? -1}
           onSwap={(altIdx) => onSwap(idx, altIdx)}
           currencyNote=""
+          index={idx}
+          isLast={idx === plan.stays.length - 1}
         />
       ))}
     </div>
@@ -349,16 +428,20 @@ function ItineraryView({ plan, swaps, onSwap }: ItineraryViewProps) {
  * worse than not having the feature, so soft items say so.
  */
 function MemoryBadge({ m }: { m: RecalledMemory }) {
-  if (m.kind === "dealbreaker" && m.field && m.value && m.op) {
-    const exclude = m.op === "must_not";
+  // Descriptors are nested under `metadata` on the wire. Reading them from the
+  // top level silently never matched, so every memory — hard filters included —
+  // fell through to the grey "preference" badge.
+  const md = m.metadata;
+  if (md?.kind === "dealbreaker" && md.field && md.value && md.op) {
+    const exclude = md.op === "must_not";
     return (
       <span
-        title={`Hard filter: ${m.field} ${m.op} ${m.value}`}
+        title={`Always enforced as a filter: ${md.field} ${md.op} ${md.value}`}
         className={`flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded ${
           exclude ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"
         }`}
       >
-        {exclude ? "never" : "always"} · {m.value}
+        {exclude ? "never" : "always"} · {md.value}
       </span>
     );
   }
@@ -384,13 +467,20 @@ function MemoryRow({
   return (
     <div className="flex items-start gap-2 py-1 group">
       <span className="flex-1 min-w-0 text-xs text-gray-700 break-words">
-        {m.memory}
+        {m.text}
         {isNew && (
           <span className="ml-1.5 text-[10px] font-semibold text-[#e61e4d] align-middle">new</span>
         )}
-        {m.score != null && (
-          <span className="ml-1.5 text-[10px] text-gray-400 align-middle">
-            {m.score.toFixed(2)}
+        {/* A bare "0.92" told the reader nothing — it is a similarity score
+            between this memory and the current message, which is jargon on
+            screen. Shown as a labelled percentage with the meaning in the
+            tooltip, and only when it is high enough to be worth mentioning. */}
+        {m.score != null && m.score > 0 && (
+          <span
+            title="How closely this memory matched what you just asked. It affects whether the memory is used, not whether it is kept."
+            className="ml-1.5 text-[10px] text-gray-400 align-middle whitespace-nowrap"
+          >
+            {Math.round(m.score * 100)}% match
           </span>
         )}
       </span>
@@ -940,8 +1030,8 @@ export function ConciergePanel() {
 
                   {/* Prose intro (one-line summary above cards) */}
                   {t.text && (
-                    <div className="bg-gray-50 rounded-2xl rounded-bl-sm px-3.5 py-2.5 text-sm text-gray-800 whitespace-pre-wrap">
-                      {t.text}
+                    <div className="bg-gray-50 rounded-2xl rounded-bl-sm px-3.5 py-2.5 text-sm text-gray-800">
+                      <Markdown text={t.text} />
                       {t.running && !t.plan && (
                         <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-[#e61e4d] animate-pulse align-middle" />
                       )}
