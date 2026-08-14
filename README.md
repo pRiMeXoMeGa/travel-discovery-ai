@@ -2,6 +2,12 @@
 
 A Booking.com / Airbnb style stays product with a multi-agent concierge underneath. You get the normal booking experience you'd expect (filters, a map, listing pages, calendars, reviews), plus natural-language search, semantic retrieval, grounded review summaries, and multi-stop trip planning. It all runs on real Inside Airbnb data for Amsterdam, Lisbon, and Los Angeles.
 
+| Start here | |
+|---|---|
+| **[FEATURES.md](./FEATURES.md)** | All 88 features in plain English — what it does, no jargon |
+| **[DEMO.md](./DEMO.md)** | How to demo each one: steps, parameters, expected results |
+| **[EVAL.md](./EVAL.md)** | How agent quality is measured, and where it falls short |
+
 ## Status
 
 v1 (phases 1-6) is built and deployed. **v2 is on the `v2-agentic` branch and is deployed
@@ -41,10 +47,10 @@ MCP, planner): **479 MB peak RSS** — 33 MB of headroom, which is why reranking
 disabled. Gemini calls per turn stay within the ≤4 ceiling (3 on `search`, 4 on
 `review`/`itinerary`/composite) — see [backend/README.md](./backend/README.md#memory-ws1).
 
-Tests: **285 backend passing (2 skipped)** in the CI environment — the MCP and planner
+Tests: **289 backend passing (2 skipped)** in the CI environment — the MCP and planner
 suites skip there because `fastmcp` and `langgraph` are deliberately not dev dependencies —
 plus **16 Playwright e2e**. All LLM-mocked, zero quota. On top of that,
-`scripts/prod_smoke.py` runs ~40 assertions against the **deployed** stack (search, detail
+`scripts/prod_smoke.py` runs **41 assertions** against the **deployed** stack (search, detail
 provenance, NL-search disclosure, concierge routing and citations, itinerary budget, the
 memory dealbreaker chain, injection resistance, MCP auth and all six tools, planner
 interrupt/resume). That one does spend LLM quota, which is why it is a deploy-time check
