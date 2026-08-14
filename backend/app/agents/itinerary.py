@@ -227,6 +227,7 @@ async def plan_itinerary(
         "total_cost": float,
         "currency_note": str,
         "within_budget": bool|None,
+        "budget_total": float|None,
         "stays": [ {
             "segment": int, "theme": str, "nights": int,
             "check_in": iso, "check_out": iso,
@@ -376,6 +377,10 @@ async def plan_itinerary(
         "total_cost": round(total_cost, 2),
         "currency_note": "Prices are in the listing's base currency (deterministic calendar).",
         "within_budget": within_budget,
+        # The budget itself, so the UI can show how much room is LEFT rather
+        # than only pass/fail. None when the traveller named no budget — the
+        # client must not invent a denominator.
+        "budget_total": sq.budget_total,
         "stays": stays,
         "notes": notes,
     }

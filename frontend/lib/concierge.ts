@@ -36,6 +36,9 @@ export interface ItineraryPlan {
   total_cost: number;
   currency_note: string;
   within_budget: boolean | null;
+  /** The traveller's stated budget, when they gave one. Drives the budget bar;
+   *  absent means no denominator exists and the bar is not rendered. */
+  budget_total?: number | null;
   notes: string[];
   stays: PlanStay[];
 }
@@ -44,15 +47,29 @@ export interface ItineraryPlan {
 // SSE event type. `data.phase` separates the pre-intent recall from the
 // post-answer write, which matters because both arrive under the same agent
 // name and would otherwise collide in the step trail.
+/** One recalled memory, as the backend actually sends it.
+ *
+ * Two shape mismatches lived here and both failed silently, because TypeScript
+ * describes the wire — it does not check it:
+ *   * the text field is `text`, not `memory`. The panel rendered `m.memory`,
+ *     which was always undefined, so every row showed a bare score and no text.
+ *   * the dealbreaker descriptors are nested under `metadata`, not top level.
+ *     The badge tested `m.kind`, never matched, and labelled every memory
+ *     "preference" — including enforced hard filters. Telling someone a binding
+ *     rule is a soft hint is the exact failure the badge exists to prevent.
+ */
 export interface RecalledMemory {
   id: string;
-  memory: string;
+  text: string;
   score?: number;
-  /** Present only on validated standing rules; absent on soft preferences. */
-  kind?: "dealbreaker";
-  field?: "amenities" | "type";
-  value?: string;
-  op?: "must" | "must_not";
+  metadata?: {
+    /** Present only on validated standing rules; absent on soft preferences. */
+    kind?: "dealbreaker";
+    field?: "amenities" | "type";
+    value?: string;
+    op?: "must" | "must_not";
+    scope?: string;
+  };
 }
 
 export interface MemoryRecallData {
