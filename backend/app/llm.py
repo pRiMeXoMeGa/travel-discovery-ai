@@ -35,7 +35,13 @@ _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 # Bounded timeouts: connect fast, allow generous read for generation.
 _TIMEOUT = httpx.Timeout(connect=5.0, read=45.0, write=10.0, pool=5.0)
 _MAX_RETRIES = 3
-_RETRY_STATUS = {429, 500, 502, 503, 504}
+# 529 is Anthropic's "Overloaded" — a transient capacity signal, exactly the
+# class 503 already covers, but it sits outside the 5xx range most retry lists
+# are written against so it is easy to omit. It was: the Anthropic path retried
+# a 503 three times with backoff and failed a 529 outright, which only shows up
+# when Anthropic is busy, i.e. the moment retrying matters most. Gemini never
+# returns it, so nothing here exercised the gap.
+_RETRY_STATUS = {429, 500, 502, 503, 504, 529}
 
 
 class LLMError(RuntimeError):
