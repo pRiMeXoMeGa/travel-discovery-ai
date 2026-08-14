@@ -65,7 +65,7 @@ extract-then-validate shape WS6 would use, minus the OCR front end.
 | Requirement | Where | Status |
 |---|---|---|
 | CI pipeline | `.github/workflows/ci.yml` — ruff + pytest + docker build, pinned actions, Python 3.11 | ✅ **green on `v2-agentic`** (run 31482009729). Note ~23 MCP tests do NOT run there: `test_mcp_server.py` importorskips `fastmcp`, which is deliberately absent from `requirements-dev.txt` |
-| Tests | **306** backend tests in the full image, **270 in CI** (the MCP and planner suites skip — `fastmcp` and `langgraph` are deliberately not dev deps); `conftest.py` stubs the heavy deps and blocks network, so the suite consumes **zero LLM quota** | ✅ WS7 |
+| Tests | **289 passing / 2 skipped** in CI (the MCP and planner suites skip — `fastmcp` and `langgraph` are deliberately not dev deps); `conftest.py` stubs the heavy deps and blocks network, so the suite consumes **zero LLM quota**. Plus **16 Playwright e2e**, and `scripts/prod_smoke.py` — 41 assertions against the live deployment | ✅ WS7 |
 | E2E | `frontend/e2e/` — **15** Playwright tests against the real restored corpus, including the WS3 interrupt/resume flow | ✅ |
 | Provider/model switching | `backend/app/llm.py` — Gemini and Anthropic behind one module, with `model`/`provider` overrides on all five public functions so a benchmark can switch without restarting the process | ✅ WS0-D |
 | Measured token usage | `llm.py::stream_text_with_usage` + `orchestrator.py` — real `usageMetadata`, tagged `usage_source: measured` vs `estimated`, replacing v1's per-chunk proxy | ✅ WS0-D |

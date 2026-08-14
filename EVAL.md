@@ -1,6 +1,10 @@
 # EVAL — Agent Output Quality
 
-**Last run: 2026-08-12 | Provider: Gemini 3.1 Flash-Lite | Deployment: https://travel-discovery-api.onrender.com (live, v2-agentic)**
+**Last run: 2026-08-14 | Provider: Gemini 3.1 Flash-Lite | Deployment: https://travel-discovery-api.onrender.com (live, built from `main`)**
+
+> Q4 and Q6 were re-measured on 2026-08-13 after being fixed; Q7b was re-measured on
+> 2026-08-14 over six repeats after the memory-persistence bug. The rest date from
+> 2026-08-12. `scripts/prod_smoke.py` re-checks all of it end to end: **41/41**.
 
 How agent output quality is measured. A set of **golden travel queries** with manual
 scoring, run against the live deployment on the real Inside Airbnb corpus (50K listings,
