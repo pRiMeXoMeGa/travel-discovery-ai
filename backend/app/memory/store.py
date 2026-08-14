@@ -64,6 +64,11 @@ TRIP_LIMIT = 6
 # thread carries on and mem0 still stores the memory. The user just doesn't see
 # it until the next turn recalls it.
 WRITE_TIMEOUT_S = 15.0
+# Standing rules get their own, separate budget. The write is deterministic and
+# LLM-free, so it is fast when the box is healthy; a generous ceiling here costs
+# nothing in the normal case and buys the guarantee a chance on a loaded free
+# instance. It is checked BEFORE the inferred write, never after.
+DEALBREAKER_TIMEOUT_S = 20.0
 
 # Canonical amenity vocabulary — must stay identical to the 18 terms produced by
 # ingestion/enrich.py::CANONICAL_AMENITIES, because these become Qdrant payload
@@ -492,34 +497,60 @@ async def remember(
         else:
             logger.info("dropping unenforceable dealbreaker: %r", raw)
 
-    async def _write_both() -> list[dict]:
+    written: list[dict] = []
+
+    # STANDING RULES FIRST, on their own budget.
+    #
+    # These are the only part of memory that becomes a hard filter, they are
+    # already validated, and they cost no LLM call — `_write_dealbreakers_sync`
+    # uses infer=False. Everything else here is inferred prose that is merely
+    # nice to have.
+    #
+    # They used to run AFTER mem0's inferred add() inside a single 15s budget,
+    # which meant the cheap guarantee queued behind the expensive optional work
+    # and lost. Measured against production: the rule was extracted correctly on
+    # 5 of 5 turns and persisted on 1 — `remember()` returned [] the other four
+    # times, so "never show me shared rooms" simply did not bind on the next
+    # turn, with nothing user-visible to say so.
+    if valid_conditions:
+        try:
+            rules = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _write_dealbreakers_sync, valid_conditions, user_id, trip_id
+                ),
+                timeout=DEALBREAKER_TIMEOUT_S,
+            )
+            for item in rules:
+                item["scope"] = "traveller"
+            written.extend(rules)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "dealbreaker write exceeded %ss — the rule will NOT bind",
+                DEALBREAKER_TIMEOUT_S,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dealbreaker write failed: %s", exc)
+
+    async def _write_inferred() -> list[dict]:
         traveller = await asyncio.to_thread(
             _add_sync, messages, user_id, {"scope": "traveller"}, True
         )
         for item in traveller:
             item["scope"] = "traveller"
-
-        if valid_conditions:
-            rules = await asyncio.to_thread(
-                _write_dealbreakers_sync, valid_conditions, user_id, trip_id
-            )
-            for item in rules:
-                item["scope"] = "traveller"
-            traveller = rules + traveller
-
         if not trip_id:
             return traveller
-
         trip = await asyncio.to_thread(_write_trip_state_sync, trip_id, trip_state)
         return traveller + trip
 
+    # A timeout here must not discard the rules already persisted above, which
+    # is why this is a separate wait_for rather than one budget over both.
     try:
-        return await asyncio.wait_for(_write_both(), timeout=WRITE_TIMEOUT_S)
+        written.extend(await asyncio.wait_for(_write_inferred(), timeout=WRITE_TIMEOUT_S))
     except asyncio.TimeoutError:
-        logger.warning("memory write exceeded %ss; abandoned", WRITE_TIMEOUT_S)
+        logger.warning("inferred memory write exceeded %ss; abandoned", WRITE_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("memory write failed: %s", exc)
-    return []
+        logger.warning("inferred memory write failed: %s", exc)
+    return written
 
 
 async def forget(memory_id: str) -> bool:

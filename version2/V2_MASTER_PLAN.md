@@ -514,8 +514,13 @@ Three things this phase taught that the plan did not anticipate:
    PLACEHOLDER *and* printed every run, and still reached two documents as truth —
    understating cost ~3x and inventing a "4x cheaper" conclusion that did not survive
    correct prices.
-3. **Free-tier LLM quota is a real constraint on verification.** A day of backfills,
-   benchmarks and end-to-end runs exhausted the daily Gemini allowance, after which every
-   LLM-dependent check fails in a way that mimics a product regression. Budget quota for
-   verification, and re-check a "regression" against quota before believing it.
+3. **LLM spend is a real constraint on verification, and it is MONTHLY.** A day of
+   backfills (2,572 calls), three benchmark runs and three end-to-end runs tripped the
+   Gemini project's **monthly spending cap** — `RESOURCE_EXHAUSTED: Your project has
+   exceeded its monthly spending cap`. Every LLM-dependent check then fails in a way that
+   mimics a product regression: empty intent parses, no dealbreakers captured, 0/6 capture
+   rates. Two lessons. Read the 429 body before diagnosing anything — a daily quota and a
+   monthly cap look identical from the client and only one of them clears overnight. And
+   budget spend for verification: an offline backfill is cheap per call and expensive in
+   aggregate.
 

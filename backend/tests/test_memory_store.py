@@ -14,6 +14,8 @@ from __future__ import annotations
 import sys
 import types
 
+import time
+
 import pytest
 
 
@@ -270,3 +272,74 @@ async def test_recall_survives_a_dealbreaker_fetch_failure(store, monkeypatch):
 
     out = await store.recall("anything", user_id="u1")
     assert out == {"traveller": [], "trip": []}
+
+
+# ── standing rules must not queue behind the inferred write ─────────────────
+
+@pytest.mark.asyncio
+async def test_dealbreakers_persist_even_when_inferred_write_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The guarantee must survive a slow mem0 inference.
+
+    Measured in production before this fix: the rule was extracted on 5 of 5
+    turns and persisted on 1. Both writes shared one 15s budget with the cheap,
+    load-bearing dealbreaker write running SECOND, so a slow inferred add() ate
+    the whole budget and `remember()` returned [] — "never show me shared rooms"
+    silently failed to bind on the next turn.
+    """
+    import asyncio as _asyncio
+
+    from app.memory import store
+
+    def _fake_rules(conditions, user_id, trip_id):
+        return [{"id": "rule-1", "text": "Never show: type = Shared room"}]
+
+    def _slow_add(*a, **kw):
+        time.sleep(store.WRITE_TIMEOUT_S + 1)   # never completes in budget
+        return [{"id": "inferred-1", "text": "should not arrive"}]
+
+    monkeypatch.setattr(store, "_write_dealbreakers_sync", _fake_rules)
+    monkeypatch.setattr(store, "_add_sync", _slow_add)
+    monkeypatch.setattr(store, "WRITE_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(store, "DEALBREAKER_TIMEOUT_S", 5.0)
+
+    out = await store.remember(
+        "Never show me shared rooms again.", "ok",
+        user_id="u1",
+        dealbreakers=[{"field": "type", "value": "Shared room", "op": "must_not"}],
+    )
+
+    texts = [m.get("text") for m in out]
+    assert "Never show: type = Shared room" in texts, (
+        "the standing rule was lost to the inferred write's timeout"
+    )
+    assert all("should not arrive" != t for t in texts)
+    assert _asyncio is not None
+
+
+@pytest.mark.asyncio
+async def test_dealbreaker_write_runs_before_the_inferred_one(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Order is the fix, not just the separate budget."""
+    from app.memory import store
+
+    calls: list[str] = []
+
+    def _rules(conditions, user_id, trip_id):
+        calls.append("rules")
+        return [{"id": "r1", "text": "Never show: type = Shared room"}]
+
+    def _add(*a, **kw):
+        calls.append("inferred")
+        return [{"id": "i1", "text": "prose"}]
+
+    monkeypatch.setattr(store, "_write_dealbreakers_sync", _rules)
+    monkeypatch.setattr(store, "_add_sync", _add)
+
+    await store.remember(
+        "Never show me shared rooms again.", "ok", user_id="u1",
+        dealbreakers=[{"field": "type", "value": "Shared room", "op": "must_not"}],
+    )
+    assert calls == ["rules", "inferred"], calls
