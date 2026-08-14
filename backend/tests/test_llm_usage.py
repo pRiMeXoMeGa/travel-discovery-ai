@@ -471,3 +471,29 @@ async def test_orchestrator_falls_back_to_chunk_proxy_when_usage_unmeasured(monk
     # Fallback proxy = number of streamed chunks, never a false zero.
     assert step.output_tokens == 4
     assert step.data == {"usage_source": "estimated"}
+
+
+# ── retryable status set ────────────────────────────────────────────────────
+
+def test_anthropic_overloaded_529_is_retryable():
+    """529 is Anthropic's "Overloaded" — transient, so it must retry.
+
+    It sits outside the contiguous 5xx block most retry lists are written
+    against, so it was omitted while 503 (the same class of fault) was covered.
+    The Anthropic path therefore failed outright exactly when Anthropic was
+    busy, which is when retrying matters most. Gemini never returns 529, so
+    nothing in this repo exercised the gap.
+    """
+    from app import llm
+
+    assert 529 in llm._RETRY_STATUS
+
+
+def test_retry_set_covers_the_transient_faults_and_not_client_errors():
+    from app import llm
+
+    for transient in (429, 500, 502, 503, 504, 529):
+        assert transient in llm._RETRY_STATUS, transient
+    # Retrying these would just burn the budget on a request that cannot succeed.
+    for permanent in (400, 401, 403, 404, 422):
+        assert permanent not in llm._RETRY_STATUS, permanent
