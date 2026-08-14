@@ -483,6 +483,24 @@ function BookingWidget({
 }
 
 // ---- Main detail page ----
+/** 1st, 2nd, 3rd, 4th … The suffix was hardcoded to "th", which rendered
+ *  "42th percentile" for every value ending in 1, 2 or 3. The 11-13 carve-out
+ *  is the reason a naive last-digit rule is wrong: 11th, not 11st. */
+function ordinal(n: number): string {
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+
 export default function ListingDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
@@ -742,7 +760,7 @@ export default function ListingDetailPage() {
                 <span>
                   Priced in the{" "}
                   <span className="font-semibold text-gray-800">
-                    {Math.round(listing.neighbourhood_price_pct * 100)}th percentile
+                    {ordinal(Math.round(listing.neighbourhood_price_pct * 100))} percentile
                   </span>{" "}
                   for {listing.neighbourhood ?? listing.city}
                 </span>
