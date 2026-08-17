@@ -5,6 +5,7 @@ A Booking.com / Airbnb style stays product with a multi-agent concierge undernea
 | Start here | |
 |---|---|
 | **[FEATURES.md](./FEATURES.md)** | All 88 features in plain English — what it does, no jargon |
+| **[STACK.md](./STACK.md)** | The same 88 features, each with the tech behind it, how it's used, and why |
 | **[DEMO.md](./DEMO.md)** | How to demo each one: steps, parameters, expected results |
 | **[EVAL.md](./EVAL.md)** | How agent quality is measured, and where it falls short |
 
@@ -107,7 +108,7 @@ Two upfront calls shaped most of this, and both came out of running it on a 4-co
 | Relational | Postgres (Neon free) | All listings, all review text with a GIN full-text index, and the summaries |
 | Vector | Qdrant (Cloud free 1 GB) | `listings` + `summaries` at 384-dim, cosine, int8. Keeping relational and vector separate is the "justify the store split" the brief asks for |
 | Cache | Redis (Upstash free) | Travel queries repeat a lot, so caching retrievals and syntheses pays off |
-| LLM | Gemini 3.1 Flash-Lite over REST, with a Claude Haiku fallback | Cheap, fast, does structured JSON and SSE. I call it over REST because the `google-generativeai` SDK is deprecated |
+| LLM | Gemini 3.1 Flash-Lite over REST, with Claude Haiku as a switchable alternative | Cheap, fast, does structured JSON and SSE. I call it over REST because the `google-generativeai` SDK is deprecated. Worth being precise: `LLM_PROVIDER` is a config toggle read once per call, **not** automatic failover — when Gemini exhausts its own retries the request raises rather than rerouting to Anthropic |
 | Embeddings | bge-small-en-v1.5 (384-dim), fastembed/ONNX, local | Costs nothing, no torch, fits Render's free 512 MB. Same model at ingest and query time so the vectors share one space |
 | Agent framework | A custom async-generator orchestrator **and** LangGraph | Two flows, two shapes — see [Two orchestration approaches](#two-orchestration-approaches-and-why) |
 
@@ -318,7 +319,7 @@ checkpoint into a silent approval.
 
 `langgraph-checkpoint-postgres` would pull psycopg alongside the asyncpg this app already
 uses — two Postgres drivers in a 512 MB instance, for a handful of small JSON blobs per
-thread. `backend/app/planner/checkpointer.py` is ~200 lines over the existing Upstash
+thread. `backend/app/planner/checkpointer.py` is ~260 lines over the existing Upstash
 client, with a 7-day TTL so abandoned threads expire rather than accumulating.
 
 Reads and writes fail differently, on purpose: an unreadable checkpoint degrades to "no
@@ -520,7 +521,7 @@ Secrets checklist (set these in the Render dashboard; none of the values are com
 | `QDRANT_URL` + `QDRANT_API_KEY` | Qdrant Cloud cluster URL + API key | Render |
 | `REDIS_URL` | Upstash `rediss://` URL | Render |
 | `GEMINI_API_KEY` | Google AI Studio | Render |
-| `ANTHROPIC_API_KEY` | console.anthropic.com (optional fallback) | Render |
+| `ANTHROPIC_API_KEY` | console.anthropic.com (only needed if `LLM_PROVIDER=anthropic`) | Render |
 | `CORS_ORIGINS` | your Vercel origin, e.g. `https://app.vercel.app` | Render |
 | `NEXT_PUBLIC_API_URL` | the Render backend URL | Vercel |
 

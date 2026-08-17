@@ -2,7 +2,8 @@
 
 Everything this project does, in plain English. No jargon, no steps — just what it can do.
 
-For *how to demo* each of these, see [DEMO.md](./DEMO.md).
+For *how to demo* each of these, see [DEMO.md](./DEMO.md). For *what each one is built on
+and why*, see [STACK.md](./STACK.md) — same 88 features, same numbering.
 
 ---
 
